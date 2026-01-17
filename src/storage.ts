@@ -10,6 +10,7 @@ export interface JobPost {
   payment: string;
   deadline: string;
   url: string;
+  channelUrl?: string;
   scrapedAt: string;
 }
 
@@ -107,4 +108,7 @@ export class DataStorage {
       .filter((f) => f.endsWith(".json"))
       .sort();
   }
-}
+
+  async listJsonFilesPublic(): Promise<string[]> {
+    return this.listJsonFiles();
+  }}

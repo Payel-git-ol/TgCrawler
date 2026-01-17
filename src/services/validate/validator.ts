@@ -28,7 +28,7 @@ const JOB_KEYWORDS = [
   "ищем",
 ];
 
-const JOB_EMOJIS = ["👔", "💼"];
+const JOB_EMOJIS = ["👔", "💼", "📌"];
 
 export class ContentValidator {
   isSpamPattern(text: string): boolean {
@@ -59,6 +59,12 @@ export class ContentValidator {
       return false;
     }
 
-    return this.hasJobKeyword(combined) && this.hasJobEmoji(title);
+    // Check for job emoji in both title and description start
+    const hasJobEmoji = this.hasJobEmoji(title) || 
+                       (title + description).substring(0, 200).includes("📌") ||
+                       (title + description).substring(0, 200).includes("👔") ||
+                       (title + description).substring(0, 200).includes("💼");
+
+    return this.hasJobKeyword(combined) && hasJobEmoji;
   }
 }

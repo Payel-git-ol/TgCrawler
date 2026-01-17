@@ -8,6 +8,16 @@ import { CONFIG } from "./config/config";
 import { Logger } from "./log/logger";
 import { ServiceFactory } from "./services/factory";
 
+// Utility function to shuffle array (Fisher-Yates)
+function shuffleArray<T>(array: T[]): T[] {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 const app = new Hono();
 const storage = new DataStorage(CONFIG.DATA_DIR);
 const crawler = new TelegramCrawler();
@@ -19,7 +29,9 @@ app.get("/", (c) => {
     name: "Telegram Web Crawler",
     version: "1.0.0",
     endpoints: {
-      "GET /api/jobs": "Get all posts",
+      "GET /api/jobs": "Get all posts from all files",
+      "GET /api/files": "List all data files",
+      "GET /api/file/:filename": "Get posts from specific file",
       "GET /api/jobs/:id": "Get post by ID",
       "GET /api/jobs/filter/type/:type": "Filter by work type",
       "POST /api/crawl": "Start crawler",
@@ -30,11 +42,34 @@ app.get("/", (c) => {
 
 app.get("/api/jobs", async (c) => {
   try {
-    const jobs = await storage.loadJobs();
-    return c.json({ success: true, count: jobs.length, jobs });
+    const jobs = await storage.loadAllJobs();
+    const shuffled = shuffleArray(jobs);
+    return c.json({ success: true, count: shuffled.length, jobs: shuffled });
   } catch (error) {
     Logger.error("Failed to load jobs", error);
     return c.json({ success: false, error: "Failed to load jobs" }, 500);
+  }
+});
+
+app.get("/api/files", async (c) => {
+  try {
+    const files = await storage.listJsonFilesPublic();
+    return c.json({ success: true, count: files.length, files });
+  } catch (error) {
+    Logger.error("Failed to load files list", error);
+    return c.json({ success: false, error: "Failed to load files" }, 500);
+  }
+});
+
+app.get("/api/file/:filename", async (c) => {
+  try {
+    const filename = c.req.param("filename");
+    const jobs = await storage.loadJobs(filename);
+    const shuffled = shuffleArray(jobs);
+    return c.json({ success: true, filename, count: shuffled.length, jobs: shuffled });
+  } catch (error) {
+    Logger.error("Failed to load file", error);
+    return c.json({ success: false, error: "Failed to load file" }, 500);
   }
 });
 
@@ -56,7 +91,7 @@ app.get("/api/jobs/:id", async (c) => {
 
 app.get("/api/jobs/filter/type/:type", async (c) => {
   try {
-    const jobs = await storage.loadJobs();
+    const jobs = await storage.loadAllJobs();
     const type = c.req.param("type").toLowerCase();
     const filtered = jobs.filter((j) =>
       j.workType.toLowerCase().includes(type)
@@ -71,24 +106,52 @@ app.get("/api/jobs/filter/type/:type", async (c) => {
 
 app.post("/api/crawl", async (c) => {
   const browser = await chromium.launch();
-  const page = await browser.newPage();
   const scraper = ServiceFactory.createScraper();
+  const allCollected: JobPost[] = [];
+  let totalDuplicates = 0;
 
   try {
-    Logger.info(`Starting crawl: ${CONFIG.TELEGRAM_URL}`);
+    Logger.info(`Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
 
     const existingIds = await storage.getExistingIds();
     const existingContent = await storage.getExistingContent();
     Logger.info(`Database: ${existingIds.size} posts`);
 
-    const allPosts = await scraper.scrape(page, CONFIG.TELEGRAM_URL);
+    for (const url of CONFIG.TELEGRAM_URLS) {
+      Logger.info(`Crawling: ${url}`);
+      const page = await browser.newPage();
 
-    const newPosts = allPosts.filter((p) => {
-      const contentHash = `${p.title}|${p.description}`;
-      return !existingIds.has(p.id) && !existingContent.has(contentHash);
-    });
+      try {
+        const allPosts = await scraper.scrape(page, url);
 
-    if (newPosts.length === 0) {
+        const newPosts = allPosts.filter((p) => {
+          const contentHash = `${p.title}|${p.description}`;
+          return !existingIds.has(p.id) && !existingContent.has(contentHash);
+        });
+
+        if (newPosts.length === 0) {
+          Logger.warn(`  No new posts from ${url}`);
+          continue;
+        }
+
+        const result = await storage.saveNewJobs(newPosts);
+
+        Logger.info(`  Saved: ${result.saved.length}, Duplicates: ${result.skipped}`);
+
+        allCollected.push(...result.saved);
+        totalDuplicates += result.skipped;
+
+        // Update existing for next channel
+        result.saved.forEach((p) => {
+          existingIds.add(p.id);
+          existingContent.add(`${p.title}|${p.description}`);
+        });
+      } finally {
+        await page.close();
+      }
+    }
+
+    if (allCollected.length === 0) {
       return c.json({
         success: true,
         message: "No new posts found",
@@ -96,12 +159,10 @@ app.post("/api/crawl", async (c) => {
       });
     }
 
-    const result = await storage.saveNewJobs(newPosts);
-
     return c.json({
       success: true,
-      message: `Collected ${result.saved.length} new posts`,
-      posts: result.saved,
+      message: `Collected ${allCollected.length} new posts from ${CONFIG.TELEGRAM_URLS.length} channels`,
+      posts: allCollected,
     });
   } catch (error) {
     Logger.error("Crawl failed", error);
@@ -116,7 +177,7 @@ app.post("/api/crawl", async (c) => {
 
 app.get("/api/stats", async (c) => {
   try {
-    const jobs = await storage.loadJobs();
+    const jobs = await storage.loadAllJobs();
 
     const stats = {
       totalPosts: jobs.length,

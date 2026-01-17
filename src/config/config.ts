@@ -1,5 +1,8 @@
 export const CONFIG = {
-  TELEGRAM_URL: "https://t.me/s/digitaltender",
+  TELEGRAM_URLS: [
+    "https://t.me/s/digitaltender",
+    "https://t.me/s/freelance_dev_work",
+  ],
   DATA_DIR: "./data",
   MAX_CRAWL_ITERATIONS: 10,
   SCROLL_DELAY_MS: 1000,

@@ -16,8 +16,8 @@ export class PostExtractor {
     const $ = this.htmlParser.parseHtml(html);
 
     return $(SELECTORS.POST_MESSAGE)
-      .map((_, element) => this.parsePost($, element, baseUrl))
-      .filter((post): post is JobPost => post !== null)
+      .map((_: number, element: any) => this.parsePost($, element, baseUrl))
+      .filter((post: any): post is JobPost => post !== null)
       .toArray();
   }
 
@@ -45,6 +45,7 @@ export class PostExtractor {
         payment: this.parser.extractField(text, "оплата|payment"),
         deadline: this.parser.extractField(text, "сроки|deadline|срок"),
         url: `${baseUrl}?q=${postId}`,
+        channelUrl: baseUrl,
         scrapedAt: new Date().toISOString(),
       };
     } catch {

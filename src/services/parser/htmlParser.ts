@@ -25,7 +25,8 @@ export class HtmlParser {
   async scrollPage(page: Page, times: number = 3): Promise<void> {
     for (let i = 0; i < times; i++) {
       await page.evaluate(() => {
-        window.scrollBy(0, window.innerHeight);
+        const w = globalThis as any;
+        w.scrollBy(0, w.innerHeight);
       });
       await page.waitForTimeout(1000);
     }
