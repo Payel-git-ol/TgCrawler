@@ -1,0 +1,13 @@
+[
+  {
+    "id": "task_1768652465802_srgodf",
+    "jobId": "post_123456",
+    "jobTitle": "TypeScript Developer Needed",
+    "deadline": "2026-02-01",
+    "status": "pending",
+    "assignee": "dev_team",
+    "notes": "Senior level required",
+    "createdAt": "2026-01-17T12:21:05.802Z",
+    "updatedAt": "2026-01-17T12:21:05.802Z"
+  }
+]
