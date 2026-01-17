@@ -302,7 +302,7 @@ app.get("/api/tasks/status/:status", async (c) => {
   try {
     const status = c.req.param("status");
     const tasks = await taskManager.getTasksByStatus(
-      status as "pending" | "assigned" | "completed" | "failed"
+      status as any
     );
 
     return c.json({ success: true, count: tasks.length, tasks });
@@ -312,6 +312,121 @@ app.get("/api/tasks/status/:status", async (c) => {
       { success: false, error: "Failed to get tasks" },
       500
     );
+  }
+});
+
+// Task Workflow Endpoints
+
+app.post("/api/tasks/:id/validate", async (c) => {
+  try {
+    const taskId = c.req.param("id");
+    const task = await taskManager.validateTask(taskId);
+
+    if (!task) {
+      return c.json({ success: false, error: "Task not found" }, 404);
+    }
+
+    return c.json({ 
+      success: true, 
+      message: `Task ${task.isSuitable ? "is suitable" : "rejected"}`,
+      task 
+    });
+  } catch (error) {
+    Logger.error("Failed to validate task", error);
+    return c.json({ success: false, error: "Validation failed" }, 500);
+  }
+});
+
+app.post("/api/tasks/:id/select-agent", async (c) => {
+  try {
+    const taskId = c.req.param("id");
+    const task = await taskManager.selectAgent(taskId);
+
+    if (!task) {
+      return c.json({ success: false, error: "Task not found" }, 404);
+    }
+
+    return c.json({ 
+      success: true, 
+      message: `Selected AI agent: ${task.selectedAgent}`,
+      task 
+    });
+  } catch (error) {
+    Logger.error("Failed to select agent", error);
+    return c.json({ success: false, error: "Agent selection failed" }, 500);
+  }
+});
+
+app.post("/api/tasks/:id/process", async (c) => {
+  try {
+    const taskId = c.req.param("id");
+    const data = await c.req.json() as { actualCost?: number };
+    const actualCost = data.actualCost || 0;
+
+    const task = await taskManager.processTask(taskId, actualCost);
+
+    if (!task) {
+      return c.json({ success: false, error: "Task not found" }, 404);
+    }
+
+    const projectedValue = task.projectedValue || 100;
+    const budgetLimit = projectedValue * 0.2;
+    const withinBudget = actualCost <= budgetLimit;
+
+    return c.json({ 
+      success: true, 
+      message: withinBudget 
+        ? "Task completed within budget" 
+        : "Cost exceeded budget, using replacement",
+      task,
+      budgetInfo: {
+        projectedValue,
+        budgetLimit,
+        actualCost,
+        withinBudget,
+      }
+    });
+  } catch (error) {
+    Logger.error("Failed to process task", error);
+    return c.json({ success: false, error: "Processing failed" }, 500);
+  }
+});
+
+app.get("/api/tasks/workflow/:id", async (c) => {
+  try {
+    const taskId = c.req.param("id");
+    const task = await taskManager.getTask(taskId);
+
+    if (!task) {
+      return c.json({ success: false, error: "Task not found" }, 404);
+    }
+
+    const getCurrentStep = (t: any) => {
+      if (t.status === "rejected") return "Rejected";
+      if (t.status === "validating" || t.isSuitable === undefined) return "1_Validating_Suitability";
+      if (!t.isSuitable) return "Rejected";
+      if (t.status === "selecting_agent" || !t.selectedAgent) return "2_Selecting_Agent";
+      if (t.status === "processing" || t.actualCost === undefined) return "3_Processing";
+      if (t.actualCost > (t.projectedValue || 100) * 0.2) return "3_Finding_Replacement";
+      return "4_Completed";
+    };
+
+    const workflow = {
+      taskId: task.id,
+      status: task.status,
+      steps: {
+        "1_suitable": task.isSuitable !== undefined ? task.isSuitable : "pending",
+        "2_customer_capable": task.customerCapable !== undefined ? task.customerCapable : "pending",
+        "3_selected_agent": task.selectedAgent || "pending",
+        "4_budget_check": task.actualCost !== undefined ? (task.actualCost <= (task.projectedValue || 100) * 0.2) : "pending",
+      },
+      currentStep: getCurrentStep(task),
+    };
+
+    return c.json({ success: true, workflow });
+  } catch (error) {
+    Logger.error("Failed to get workflow", error);
+    return c.json({ success: false, error: "Failed to get workflow" }, 500);
   }
 });
 

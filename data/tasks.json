@@ -9,5 +9,22 @@
     "notes": "Senior level required",
     "createdAt": "2026-01-17T12:21:05.802Z",
     "updatedAt": "2026-01-17T12:21:05.802Z"
+  },
+  {
+    "id": "task_1768655771339_rjo68r",
+    "jobId": "post_job_ai_001",
+    "jobTitle": "Implement Advanced TypeScript Implementation with Enterprise Architecture",
+    "deadline": "2026-02-15",
+    "status": "completed",
+    "assignee": "",
+    "notes": "",
+    "projectedValue": 250,
+    "retries": 0,
+    "createdAt": "2026-01-17T13:16:11.339Z",
+    "updatedAt": "2026-01-17T13:53:45.573Z",
+    "isSuitable": true,
+    "customerCapable": true,
+    "selectedAgent": "gpt-4",
+    "actualCost": 45
   }
 ]
