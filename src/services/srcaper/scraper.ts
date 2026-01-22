@@ -66,7 +66,6 @@ export class Scraper {
 
       lastPostId = posts[posts.length - 1]?.id || null;
       
-      // Уменьшаем количество скроллов для более точного поиска новых постов
       await this.htmlParser.scrollPage(page, 2);
     }
 

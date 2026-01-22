@@ -23,16 +23,13 @@ export class HtmlParser {
 
   extractTimestamp($el: any): Date | null {
     try {
-      // Пытаемся получить время из атрибута datetime
       const datetime = $el.find(SELECTORS.MESSAGE_TIME).attr("datetime");
       if (datetime) {
         return new Date(datetime);
       }
       
-      // Альтернативный способ: парсим из текста даты
       const dateText = $el.find(SELECTORS.MESSAGE_DATE).text().trim();
       if (dateText) {
-        // Упрощенный парсинг даты Telegram
         const now = new Date();
         
         if (dateText.includes('сегодня') || dateText.includes('today')) {
@@ -45,7 +42,6 @@ export class HtmlParser {
           return new Date(yesterday.setHours(0, 0, 0, 0));
         }
         
-        // Пытаемся парсить конкретную дату
         const dateMatch = dateText.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
         if (dateMatch) {
           const day = parseInt(dateMatch[1]);

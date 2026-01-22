@@ -22,6 +22,8 @@ COPY package-lock.json ./
 
 RUN npm ci
 
+RUN npx playwright install chromium
+
 COPY . .
 
 RUN npm run build

@@ -1,14 +1,16 @@
 import { Hono } from "hono";
 import { chromium } from "playwright";
 import * as http from "http";
-
-import { TelegramCrawler } from "./crawler/crawler";
+import fs from 'fs/promises';
+import path from 'path';
 import { DataStorage, JobPost } from "./storage";
 import { CONFIG } from "./config/config";
 import { Logger } from "./log/logger";
 import { ServiceFactory } from "./services/factory";
 import { TaskManager, TaskRequest } from "./services/tasks/taskManager";
 import { TelegramTaskPublisher } from "./services/tasks/telegramTaskPublisher";
+import { deleteFolderContents } from "./deleteTasks";
+import { launchBrowser } from "./lounchBrowser";
 
 // Utility function to shuffle array (Fisher-Yates)
 function shuffleArray<T>(array: T[]): T[] {
@@ -22,7 +24,6 @@ function shuffleArray<T>(array: T[]): T[] {
 
 const app = new Hono();
 const storage = new DataStorage(CONFIG.DATA_DIR);
-const crawler = new TelegramCrawler();
 const taskManager = new TaskManager(CONFIG.DATA_DIR);
 
 // Routes
@@ -47,6 +48,7 @@ app.get("/", (c) => {
         "GET /api/tasks/:id": "Get task by ID",
         "PUT /api/tasks/:id": "Update task",
         "DELETE /api/tasks/:id": "Delete task",
+        "DELETE /tasks/delete": "Delete all file tasks",
         "GET /api/tasks/status/:status": "Get tasks by status (pending|assigned|completed|failed)",
       },
     },
@@ -118,7 +120,7 @@ app.get("/api/jobs/filter/type/:type", async (c) => {
 });
 
 app.post("/api/crawl", async (c) => {
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const allCollected: JobPost[] = [];
   let totalDuplicates = 0;
@@ -478,9 +480,70 @@ app.post("/api/tasks/:id/publish", async (c) => {
   }
 });
 
+app.delete("/tasks/delete", async (c) => {
+try {
+    const dataDir = path.join(process.cwd(), 'data');
+    
+    try {
+      await fs.access(dataDir);
+    } catch {
+      return c.json({
+        success: true,
+        message: "Data directory doesn't exist, nothing to delete",
+        deleted: 0
+      });
+    }
+
+    let deletedCount = 0;
+    let errors: string[] = [];
+
+    const items = await fs.readdir(dataDir);
+    
+    for (const item of items) {
+      try {
+        const itemPath = path.join(dataDir, item);
+        const stat = await fs.stat(itemPath);
+        
+        if (stat.isDirectory()) {
+          await deleteFolderContents(itemPath);
+          deletedCount++;
+        } else {
+          await fs.unlink(itemPath);
+          deletedCount++;
+        }
+      } catch (error) {
+        errors.push(`Failed to delete ${item}: ${error}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      return c.json({
+        success: false,
+        message: `Partially deleted ${deletedCount} items with errors`,
+        deleted: deletedCount,
+        errors: errors
+      }, 207);
+    }
+
+    Logger.info(`Deleted ${deletedCount} items from data directory`);
+    
+    return c.json({
+      success: true,
+      message: `Successfully deleted ${deletedCount} items from data directory`,
+      deleted: deletedCount
+    });
+  } catch (error) {
+    Logger.error("Failed to delete data directory contents", error);
+    return c.json({
+      success: false,
+      error: "Failed to delete data directory contents",
+      details: String(error)
+    }, 500);
+  }
+});
+
 const PORT = 3000;
 
-// Создаем HTTP сервер с Hono app
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(`http://${req.headers.host}${req.url}`);
