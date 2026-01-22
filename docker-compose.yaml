@@ -1,0 +1,26 @@
+services:
+  telegram-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-scraper
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - TZ=Europe/Moscow
+      - PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium-browser
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

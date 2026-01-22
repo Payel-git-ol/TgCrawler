@@ -47,6 +47,7 @@ export class PostExtractor {
         url: `${baseUrl}?q=${postId}`,
         channelUrl: baseUrl,
         scrapedAt: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
       };
     } catch {
       return null;

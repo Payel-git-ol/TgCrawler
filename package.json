@@ -2,7 +2,6 @@
   "name": "tg-crawler",
   "version": "1.0.0",
   "description": "Telegram Web Crawler with Playwright and Hono",
-  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
