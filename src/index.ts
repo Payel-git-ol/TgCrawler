@@ -8,6 +8,7 @@ import { CONFIG } from "./config/config";
 import { Logger } from "./log/logger";
 import { ServiceFactory } from "./services/factory";
 import { TaskManager, TaskRequest } from "./services/tasks/taskManager";
+import { TelegramTaskPublisher } from "./services/tasks/telegramTaskPublisher";
 
 // Utility function to shuffle array (Fisher-Yates)
 function shuffleArray<T>(array: T[]): T[] {
@@ -427,6 +428,53 @@ app.get("/api/tasks/workflow/:id", async (c) => {
   } catch (error) {
     Logger.error("Failed to get workflow", error);
     return c.json({ success: false, error: "Failed to get workflow" }, 500);
+  }
+});
+
+// Telegram Publishing Endpoints
+
+app.post("/api/tasks/:id/publish", async (c) => {
+  try {
+    const taskId = c.req.param("id");
+    const data = await c.req.json() as { botToken?: string; botName?: string };
+
+    const task = await taskManager.getTask(taskId);
+    if (!task) {
+      return c.json({ success: false, error: "Task not found" }, 404);
+    }
+
+    // Use provided token or default
+    const botToken = data.botToken || process.env.TELEGRAM_BOT_TOKEN || "";
+    const botName = data.botName || "doindeadlinebot";
+
+    if (!botToken) {
+      return c.json(
+        { success: false, error: "Bot token not provided" },
+        400
+      );
+    }
+
+    const publisher = new TelegramTaskPublisher(botToken, botName);
+    const published = await publisher.publishTask(task);
+
+    if (!published) {
+      return c.json(
+        { success: false, error: "Failed to publish task" },
+        500
+      );
+    }
+
+    // Update task status to published
+    await taskManager.updateTask(taskId, { status: "completed" });
+
+    return c.json({
+      success: true,
+      message: `Task published to @${botName}`,
+      task,
+    });
+  } catch (error) {
+    Logger.error("Failed to publish task", error);
+    return c.json({ success: false, error: "Publishing failed" }, 500);
   }
 });
 

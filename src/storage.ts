@@ -3,6 +3,7 @@ import * as path from "path";
 import { Logger } from "./log/logger";
 
 export interface JobPost {
+  timestamp: any;
   id: string;
   title: string;
   description: string;

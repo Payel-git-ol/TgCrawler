@@ -21,20 +21,42 @@ export class Scraper {
 
     const allPosts = [];
     let lastPostId: string | null = null;
+    let foundOldPosts = false;
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
 
-    for (let i = 0; i < CONFIG.MAX_CRAWL_ITERATIONS; i++) {
+    for (let i = 0; i < CONFIG.MAX_CRAWL_ITERATIONS && !foundOldPosts; i++) {
       const posts = await this.extractor.extractFromPage(page, url);
 
-      Logger.info(
-        `Iteration ${i + 1}: Found ${posts.length} posts`
-      );
+      Logger.info(`Iteration ${i + 1}: Found ${posts.length} posts`);
 
-      if (posts.length === 0 && allPosts.length > 0) {
-        Logger.info("No more posts, stopping");
+      if (posts.length === 0) {
+        if (allPosts.length > 0) {
+          Logger.info("No more posts, stopping");
+        }
         break;
       }
 
-      allPosts.push(...posts);
+      const recentPosts = posts.filter(post => {
+        if (!post.timestamp) return true; 
+        
+        const postDate = new Date(post.timestamp);
+        return postDate >= oneWeekAgo;
+      });
+
+      if (recentPosts.length === 0) {
+        Logger.info("Reached posts older than 1 week, stopping");
+        foundOldPosts = true;
+        break;
+      }
+
+      allPosts.push(...recentPosts);
+
+      if (recentPosts.length < posts.length) {
+        Logger.info("Reached posts older than 1 week, stopping");
+        foundOldPosts = true;
+        break;
+      }
 
       const hasNew = await this.extractor.hasNewPosts(page, lastPostId);
       if (!hasNew) {
@@ -43,9 +65,12 @@ export class Scraper {
       }
 
       lastPostId = posts[posts.length - 1]?.id || null;
-      await this.htmlParser.scrollPage(page, 3);
+      
+      // Уменьшаем количество скроллов для более точного поиска новых постов
+      await this.htmlParser.scrollPage(page, 2);
     }
 
+    Logger.success(`Collected ${allPosts.length} posts from the last week`);
     return allPosts;
   }
 }

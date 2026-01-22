@@ -1,10 +1,13 @@
 import { Page } from "playwright";
 import { load } from "cheerio";
+import { Logger } from "../../log/logger";
 
 export const SELECTORS = {
   POST_MESSAGE: ".tgme_widget_message",
   MESSAGE_TEXT: ".tgme_widget_message_text",
   POST_LINK: "a[href*='/s/']",
+  MESSAGE_TIME: "time.datetime",
+  MESSAGE_DATE: ".tgme_widget_message_date",
 };
 
 export class HtmlParser {
@@ -18,6 +21,47 @@ export class HtmlParser {
     return text || $el.text().trim();
   }
 
+  extractTimestamp($el: any): Date | null {
+    try {
+      // Пытаемся получить время из атрибута datetime
+      const datetime = $el.find(SELECTORS.MESSAGE_TIME).attr("datetime");
+      if (datetime) {
+        return new Date(datetime);
+      }
+      
+      // Альтернативный способ: парсим из текста даты
+      const dateText = $el.find(SELECTORS.MESSAGE_DATE).text().trim();
+      if (dateText) {
+        // Упрощенный парсинг даты Telegram
+        const now = new Date();
+        
+        if (dateText.includes('сегодня') || dateText.includes('today')) {
+          return new Date(now.setHours(0, 0, 0, 0));
+        }
+        
+        if (dateText.includes('вчера') || dateText.includes('yesterday')) {
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          return new Date(yesterday.setHours(0, 0, 0, 0));
+        }
+        
+        // Пытаемся парсить конкретную дату
+        const dateMatch = dateText.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+        if (dateMatch) {
+          const day = parseInt(dateMatch[1]);
+          const month = parseInt(dateMatch[2]) - 1;
+          const year = dateMatch[3].length === 2 ? 
+            parseInt('20' + dateMatch[3]) : 
+            parseInt(dateMatch[3]);
+          return new Date(year, month, day);
+        }
+      }
+    } catch (error) {
+      Logger.warn(`Could not parse timestamp: ${error}`);
+    }
+    return null;
+  }
+
   parseHtml(html: string): any {
     return load(html);
   }
@@ -26,15 +70,15 @@ export class HtmlParser {
     for (let i = 0; i < times; i++) {
       await page.evaluate(() => {
         const w = globalThis as any;
-        w.scrollBy(0, w.innerHeight);
+        w.scrollBy(0, w.innerHeight / 2); 
       });
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(800); 
     }
   }
 
   async waitForSelector(page: Page, selector: string, timeout: number): Promise<void> {
     await page.waitForSelector(selector, { timeout }).catch(() => {
-      // Timeout is acceptable
+      Logger.warn(`Selector ${selector} not found within ${timeout}ms`);
     });
   }
 }

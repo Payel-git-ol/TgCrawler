@@ -1,4 +1,4 @@
-import { Scraper } from "./scraper/scraper";
+import { Scraper } from "./srcaper/scraper";
 import { PostExtractor } from "./extractor";
 import { HtmlParser } from "./parser/htmlParser";
 import { TextParser } from "./parser/parser";
