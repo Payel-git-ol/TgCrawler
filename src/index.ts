@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { chromium } from "playwright";
 import * as http from "http";
 import fs from 'fs/promises';
 import path from 'path';
@@ -9,10 +8,12 @@ import { Logger } from "./log/logger";
 import { ServiceFactory } from "./services/factory";
 import { TaskManager, TaskRequest } from "./services/tasks/taskManager";
 import { TelegramTaskPublisher } from "./services/tasks/telegramTaskPublisher";
-import { deleteFolderContents } from "./deleteTasks";
 import { launchBrowser } from "./lounchBrowser";
+import { DeadlineTaskApi } from "./services/deadlineTaskApi";
+import { config } from 'dotenv';
 
-// Utility function to shuffle array (Fisher-Yates)
+config();
+
 function shuffleArray<T>(array: T[]): T[] {
   const arr = [...array];
   for (let i = arr.length - 1; i > 0; i--) {
@@ -22,11 +23,510 @@ function shuffleArray<T>(array: T[]): T[] {
   return arr;
 }
 
+async function deleteFolderContents(folderPath: string) {
+  const items = await fs.readdir(folderPath);
+  
+  for (const item of items) {
+    const itemPath = path.join(folderPath, item);
+    const stat = await fs.stat(itemPath);
+    
+    if (stat.isDirectory()) {
+      await deleteFolderContents(itemPath);
+      await fs.rmdir(itemPath);
+    } else {
+      await fs.unlink(itemPath);
+    }
+  }
+}
+
+function parseChannelUrl(url: string): string | null {
+  if (!url || url.trim() === '') {
+    return null;
+  }
+  
+  const match = url.match(/https?:\/\/t\.me\/([^/?]+)/);
+  if (match) {
+    return `https://t.me/${match[1]}`;
+  }
+  
+  return url;
+}
+
+function getCleanTitle(rawTitle: string, rawDescription: string): string {
+  const titleIsEmpty = !rawTitle || rawTitle.trim() === '' || rawTitle.toLowerCase().includes('без названия');
+  
+  let cleanTitle = rawTitle;
+  
+  if (!titleIsEmpty) {
+    // Удаляем эмодзи и специальные символы в начале
+    cleanTitle = rawTitle
+      .replace(/^[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1f926}-\u{1f937}\u{10000}-\u{10FFFF}\u{1f1f0}-\u{1f1ff}\u{1f201}-\u{1f251}📌📝💳🌐〰️#]+/gu, '')
+      .replace(/^\s*[📌📝💳🌐〰️#]+\s*/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s*:\s*/g, ': ')
+      .trim();
+  }
+
+  // Если названия нет или оно слишком короткое, берем из описания
+  if (titleIsEmpty || !cleanTitle || cleanTitle.length < 5) {
+    if (rawDescription && rawDescription.length > 20) {
+      cleanTitle = rawDescription
+        .replace(/^[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1f926}-\u{1f937}\u{10000}-\u{10FFFF}\u{1f1f0}-\u{1f1ff}\u{1f201}-\u{1f251}📌📝💳🌐〰️#]+/gu, '')
+        .replace(/^\s*[📌📝💳🌐〰️#]+\s*/g, '')
+        .substring(0, 100)
+        .trim();
+    }
+  }
+
+  if (cleanTitle.length > 80) {
+    const colonIndex = cleanTitle.indexOf(':');
+    const dashIndex = cleanTitle.indexOf('-');
+    const cutIndex = Math.max(colonIndex, dashIndex);
+
+    if (cutIndex > 20 && cutIndex < 60) {
+      cleanTitle = cleanTitle.substring(0, cutIndex).trim();
+    } else {
+      cleanTitle = cleanTitle.substring(0, 77) + '...';
+    }
+  }
+
+  const allText = (cleanTitle + " " + (rawDescription || '')).toLowerCase();
+  
+  let tech = "";
+  if (allText.includes('python') || allText.includes('питон')) {
+    tech = "Python";
+  } else if (allText.includes('javascript') || allText.includes('js')) {
+    tech = "JavaScript";
+  } else if (allText.includes('php')) {
+    tech = "PHP";
+  } else if (allText.includes('c#') || allText.includes('.net')) {
+    tech = "C#";
+  } else if (allText.includes('java') && !allText.includes('javascript')) {
+    tech = "Java";
+  } else if (allText.includes('figma')) {
+    tech = "Figma";
+  } else if (allText.includes('react')) {
+    tech = "React";
+  } else if (allText.includes('vue')) {
+    tech = "Vue";
+  } else if (allText.includes('angular')) {
+    tech = "Angular";
+  } else if (allText.includes('html') || allText.includes('css')) {
+    tech = "HTML/CSS";
+  }
+  
+  let taskType = "";
+  if (allText.includes('дизайн') || allText.includes('design') || allText.includes('figma')) {
+    taskType = "дизайн";
+  } else if (allText.includes('сайт') || allText.includes('веб') || allText.includes('web') || allText.includes('landing')) {
+    taskType = "сайт";
+  } else if (allText.includes('бот') || allText.includes('bot') || allText.includes('telegram')) {
+    taskType = "бота";
+  } else if (allText.includes('интерфейс') || allText.includes('ui') || allText.includes('ux')) {
+    taskType = "интерфейс";
+  } else if (allText.includes('приложен') || allText.includes('app') || allText.includes('мобильн')) {
+    taskType = "приложение";
+  } else if (allText.includes('парс') || allText.includes('scrap') || allText.includes('краул')) {
+    taskType = "парсер";
+  } else if (allText.includes('api') || allText.includes('интеграц')) {
+    taskType = "API";
+  } else if (allText.includes('карт') || allText.includes('гео') || allText.includes('map')) {
+    taskType = "карты";
+  }
+  
+  if (tech && taskType) {
+    return `Нужен ${tech} разработчик для ${taskType}`;
+  } 
+  else if (tech) {
+    return `Требуется ${tech} разработчик`;
+  }
+  else if (taskType) {
+    return `Требуется ${taskType}`;
+  }
+  else {
+    return cleanTitle || "Нужно выполнить задачу";
+  }
+}
+
+function extractBudget(text: string): { from: number | null; to: number | null } {
+  if (!text) return { from: null, to: null };
+  
+  // Проверяем на плохие значения
+  const badValues = ['договорная', 'договорная цена', '??', '?', 'не указано', 'не указана', 
+                     'unknown', 'n/a', 'none', 'не известна', 'не известно'];
+  const lowerText = text.toLowerCase().trim();
+  if (badValues.includes(lowerText)) {
+    return { from: null, to: null };
+  }
+  
+  const patterns = [
+    /от\s*(\d+[\s.,]?\d*)\s*до\s*(\d+[\s.,]?\d*)/gi,
+    /(\d+[\s.,]?\d*)\s*[-–—]\s*(\d+[\s.,]?\d*)/g,
+    /budget[:\s]*(\d+[\s.,]?\d*)\s*[-–—]\s*(\d+[\s.,]?\d*)/gi,
+    /цена[:\s]*(\d+[\s.,]?\d*)\s*[-–—]\s*(\d+[\s.,]?\d*)/gi,
+    /оплат[аиы]?[:\s]*(\d+[\s.,]?\d*)\s*[-–—]\s*(\d+[\s.,]?\d*)/gi,
+    /стоимость[:\s]*(\d+[\s.,]?\d*)\s*[-–—]\s*(\d+[\s.,]?\d*)/gi,
+    /(\d+[\s.,]?\d*)\s*(?:руб|р\.|usd|\$|€|₽)/gi
+  ];
+  
+  for (const pattern of patterns) {
+    const matches = text.matchAll(pattern);
+    for (const match of matches) {
+      try {
+        const num1 = parseFloat(match[1].replace(/[^\d.,]/g, '').replace(',', '.'));
+        const num2 = match[2] ? parseFloat(match[2].replace(/[^\d.,]/g, '').replace(',', '.')) : num1;
+        
+        if (!isNaN(num1)) {
+          return { 
+            from: num1 < num2 ? num1 : num2, 
+            to: num1 < num2 ? num2 : num1 
+          };
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+  
+  return { from: null, to: null };
+}
+
+function isValidJob(structuredJob: any): { valid: boolean; reason?: string } {
+  // Проверка бюджета только
+  if (!structuredJob.budget_from && !structuredJob.budget_to) {
+    return { valid: false, reason: 'Missing budget/price' };
+  }
+  
+  // Бюджет должен быть разумным (больше чем 100 рублей)
+  if (structuredJob.budget_from && structuredJob.budget_from < 100) {
+    return { valid: false, reason: `Budget too low: ${structuredJob.budget_from}` };
+  }
+  
+  return { valid: true };
+}
+
+function getCleanDescription(cleanTitle: string, description: string): string {
+  if (!description || description.trim() === '') {
+    return `Задача: ${cleanTitle}. Требуется выполнить в кратчайшие сроки.`;
+  }
+
+  let cleanDesc = description
+    // Удаляем эмодзи и специальные символы
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1f926}-\u{1f937}\u{10000}-\u{10FFFF}\u{1f1f0}-\u{1f1ff}\u{1f201}-\u{1f251}📌📝💳🌐〰️#]/gu, '')
+    // Удаляем множественные пробелы и переносы
+    .replace(/\s+/g, ' ')
+    .replace(/\n\s*\n/g, '\n')
+    .trim();
+
+  // Если после очистки описание слишком короткое, добавляем контекст
+  if (cleanDesc.length < 20) {
+    cleanDesc = `Задача: ${cleanTitle}. ${cleanDesc}`;
+  }
+
+  if (cleanDesc.length > 1000) {
+    cleanDesc = cleanDesc.substring(0, 997) + '...';
+  }
+
+  return cleanDesc;
+}
+
+function getIntelligentTags(cleanTitle: string, cleanDesc: string): string[] {
+  const allText = (cleanTitle + " " + cleanDesc).toLowerCase();
+  const tags = new Set<string>();
+  
+  // Извлекаем теги из самого текста
+  const words = allText.split(/\s+/);
+  const techKeywords = ['python', 'javascript', 'js', 'php', 'java', 'c#', 'react', 'vue', 'angular', 'node', 'django', 'flask', 'laravel', 'html', 'css', 'figma', 'wordpress', 'telegram', 'бот'];
+  
+  words.forEach(word => {
+    const cleanWord = word.replace(/[^\wа-яё#]/gi, '');
+    if (techKeywords.includes(cleanWord) || techKeywords.includes(cleanWord + '.js')) {
+      tags.add(cleanWord.charAt(0).toUpperCase() + cleanWord.slice(1));
+    }
+  });
+  
+  if (allText.includes('дизайн') || allText.includes('figma')) tags.add('дизайн');
+  if (allText.includes('сайт') || allText.includes('веб') || allText.includes('landing')) tags.add('веб-разработка');
+  if (allText.includes('бот') || allText.includes('telegram')) tags.add('бот');
+  if (allText.includes('интерфейс') || allText.includes('ui') || allText.includes('ux')) tags.add('UI/UX');
+  if (allText.includes('приложен') || allText.includes('app')) tags.add('мобильная разработка');
+  if (allText.includes('парс') || allText.includes('scrap')) tags.add('парсинг');
+  if (allText.includes('api')) tags.add('API');
+  if (allText.includes('баз') || allText.includes('data') || allText.includes('sql')) tags.add('базы данных');
+  if (allText.includes('карт') || allText.includes('гео') || allText.includes('map')) tags.add('карты');
+  if (allText.includes('финтех') || allText.includes('финанс')) tags.add('финтех');
+  if (allText.includes('seo')) tags.add('SEO');
+  
+  if (allText.includes('бюджет') || allText.includes('оплат') || allText.includes('цена') || allText.includes('стоимость')) {
+    tags.add('оплачиваемая');
+  }
+  
+  return Array.from(tags);
+}
+
+function estimateDeadline(description: string): number {
+  const desc = description.toLowerCase();
+  let days = 7; 
+  
+  if (desc.includes('срочн') || desc.includes('urgent') || desc.includes('быстр')) {
+    days = 1;
+  } else if (desc.includes('скоро') || desc.includes('в течение') || desc.match(/\d+\s*(час|часов)/)) {
+    days = 1;
+  } else if (desc.includes('недел') || desc.match(/\d+\s*дн[ея]й?/)) {
+    const match = desc.match(/(\d+)\s*дн[ея]й?/);
+    if (match) {
+      days = parseInt(match[1]);
+    } else {
+      days = 7;
+    }
+  } else if (desc.includes('месяц') || desc.match(/\d+\s*мес/)) {
+    days = 30;
+  } else if (desc.includes('год')) {
+    days = 365;
+  }
+  
+  return Math.min(Math.max(days, 1), 365);
+}
+
+async function convertToStructuredJob(rawJob: any): Promise<any> {
+  console.log("🚀 RAW JOB DATA:", {
+    title: rawJob.title?.substring(0, 100),
+    description: rawJob.description?.substring(0, 100),
+    budget: rawJob.budget,
+    workType: rawJob.workType,
+    payment: rawJob.payment
+  });
+  
+  const originalTitle = rawJob.title || rawJob.jobTitle || '';
+  const originalDescription = rawJob.description || rawJob.content || rawJob.text || '';
+  const originalBudget = rawJob.budget || rawJob.payment || rawJob.price || '';
+  const originalWorkType = rawJob.workType || rawJob.type || '';
+  const originalTags = rawJob.tags || rawJob.skills || [];
+  
+  const cleanTitle = getCleanTitle(originalTitle, originalDescription);
+  const cleanDesc = getCleanDescription(cleanTitle, originalDescription);
+  
+  console.log("🔍 Cleaned title:", cleanTitle);
+  console.log("🔍 Cleaned description (first 100 chars):", cleanDesc.substring(0, 100));
+  
+  let budget = { from: null, to: null };
+  if (originalBudget && typeof originalBudget === 'string') {
+    budget = extractBudget(originalBudget);
+  }
+  if (budget.from === null && originalDescription) {
+    budget = extractBudget(originalDescription);
+  }
+  
+  console.log("💰 Extracted budget:", budget);
+  
+  const autoTags = getIntelligentTags(cleanTitle, cleanDesc);
+  const allTags = [...new Set([...autoTags, ...originalTags])];
+  
+  console.log("🏷️ Tags:", allTags);
+  
+  const deadline = estimateDeadline(originalDescription);
+  
+  const channelUrl = parseChannelUrl(rawJob.channelUrl || rawJob.source || '');
+  
+  return {
+    id: rawJob.id || rawJob.originalId || `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    title: cleanTitle,
+    description: cleanDesc,
+    budget_from: budget.from,
+    budget_to: budget.to,
+    tags: allTags,
+    deadline: deadline,
+    url: rawJob.url || rawJob.link || '',
+    channelUrl: channelUrl,
+    scrapedAt: rawJob.scrapedAt || new Date().toISOString(),
+    processed_at: new Date().toISOString(),
+    original_data: {
+      title: originalTitle,
+      description: originalDescription.substring(0, 200) + '...',
+      budget: originalBudget,
+      workType: originalWorkType,
+      source_file: rawJob.filename
+    }
+  };
+}
+
+interface SentJobRecord {
+  task_id: string;
+  sent_date: string;
+  status: string;
+  original_title?: string;  
+  structured_title?: string;
+  budget?: string;
+  original_budget?: string;
+  discounted_budget?: string;
+  chat_id?: number;
+  message_id?: number;
+  bot_response?: any;  
+}
+
+interface LogData {
+  id?: any;
+  title?: any;
+  description?: string;
+  workType?: any;
+  payment?: any;
+  budget?: any;
+  hasBudget?: boolean;
+  keys?: string[];
+  [key: string]: any;
+}
+
+
+async function loadSentJobsDB(): Promise<Record<string, SentJobRecord>> {
+  const dbPath = path.join(process.cwd(), 'sent_jobs_database.json');
+  try {
+    const content = await fs.readFile(dbPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+
+async function saveSentJobsDB(db: Record<string, SentJobRecord>): Promise<void> {
+  const dbPath = path.join(process.cwd(), 'sent_jobs_database.json');
+  await fs.writeFile(dbPath, JSON.stringify(db, null, 2), 'utf-8');
+}
+
+async function loadJobsFromDataFolder(): Promise<any[]> {
+  const dataDir = path.join(process.cwd(), 'data');
+  let allJobs: any[] = [];
+
+  try {
+    const stat = await fs.stat(dataDir).catch(() => null);
+    if (!stat || !stat.isDirectory()) {
+      console.warn(`Data directory not found: ${dataDir}`);
+      return [];
+    }
+
+    const files = await fs.readdir(dataDir);
+    
+    for (const file of files) {
+      if (file === 'tasks.json' || !file.endsWith('.json')) {
+        continue;
+      }
+
+      const filePath = path.join(dataDir, file);
+      try {
+        const fileContent = await fs.readFile(filePath, 'utf8');
+        const jsonData = JSON.parse(fileContent);
+        
+        console.log(`📁 Processing file: ${file}`);
+        console.log(`   File size: ${fileContent.length} characters`);
+        
+        if (Array.isArray(jsonData)) {
+          console.log(`   File contains array with ${jsonData.length} items`);
+          
+          const jobs = jsonData.map((post: any, index: number) => {
+            if (index < 2) {
+              console.log(`   Item ${index}:`, {
+                id: post.id,
+                title: post.title?.substring(0, 50),
+                description: post.description?.substring(0, 50) + (post.description?.length > 50 ? '...' : ''),
+                workType: post.workType?.substring(0, 50),
+                budget: post.budget,
+                hasFullDescription: post.description && post.description.length > 100
+              });
+            }
+            
+            return {
+              ...post,
+              originalId: post.id || `post_${Date.now()}_${index}`,
+              filename: file,
+              scrapedAt: post.scrapedAt || post.date || new Date().toISOString()
+            };
+          });
+          
+          allJobs = allJobs.concat(jobs);
+          console.log(`ℹ️  Loaded ${jobs.length} posts from ${file}`);
+        } else if (jsonData && typeof jsonData === 'object') {
+          console.log(`   File is an object, keys: ${Object.keys(jsonData).join(', ')}`);
+          
+          // Если файл имеет структуру с ключами
+          if (Array.isArray(jsonData.posts)) {
+            const jobs = jsonData.posts.map((post: any, index: number) => ({
+              ...post,
+              originalId: post.id || `post_${Date.now()}_${index}`,
+              filename: file,
+              scrapedAt: post.scrapedAt || jsonData.scrapedAt || new Date().toISOString()
+            }));
+            allJobs = allJobs.concat(jobs);
+            console.log(`ℹ️  Loaded ${jobs.length} posts from ${file}`);
+          } else if (Array.isArray(jsonData.jobs)) {
+            const jobs = jsonData.jobs.map((job: any, index: number) => ({
+              ...job,
+              originalId: job.id || `job_${Date.now()}_${index}`,
+              filename: file,
+              scrapedAt: job.scrapedAt || jsonData.scrapedAt || new Date().toISOString()
+            }));
+            allJobs = allJobs.concat(jobs);
+            console.log(`ℹ️  Loaded ${jobs.length} jobs from ${file}`);
+          } else {
+            const job = {
+              ...jsonData,
+              originalId: jsonData.id || `single_${Date.now()}`,
+              filename: file,
+              scrapedAt: jsonData.scrapedAt || new Date().toISOString()
+            };
+            allJobs.push(job);
+            console.log(`ℹ️  Loaded 1 job from ${file}`);
+          }
+        }
+      } catch (error) {
+        console.error(`❌ Error reading/parsing ${file}:`, error);
+        continue;
+      }
+    }
+
+    console.log(`ℹ️  Total jobs loaded from data folder: ${allJobs.length}`);
+    
+    if (allJobs.length > 0) {
+      console.log("\n🔍 DETAILED ANALYSIS OF FIRST 3 JOBS:");
+      allJobs.slice(0, 3).forEach((job, i) => {
+        console.log(`\nJob ${i + 1}:`);
+        console.log(`  ID: ${job.id}`);
+        console.log(`  Title: ${job.title}`);
+        console.log(`  Title length: ${job.title?.length || 0} chars`);
+        console.log(`  Description: ${job.description?.substring(0, 100)}${job.description?.length > 100 ? '...' : ''}`);
+        console.log(`  Description length: ${job.description?.length || 0} chars`);
+        console.log(`  Work type: ${job.workType}`);
+        console.log(`  Budget: ${job.budget}`);
+        console.log(`  Payment: ${job.payment}`);
+        console.log(`  All keys: ${Object.keys(job).join(', ')}`);
+      });
+    }
+    
+    return allJobs;
+  } catch (error) {
+    console.error(`❌ Error reading data directory:`, error);
+    return [];
+  }
+}
+
+async function mockSendToAPI(structuredJob: any) {
+  const delay = Math.floor(
+    Math.random() * 
+    (Number(process.env.MOCK_DELAY_MAX || 100) - Number(process.env.MOCK_DELAY_MIN || 50)) + 
+    Number(process.env.MOCK_DELAY_MIN || 50)
+  );
+  await new Promise(r => setTimeout(r, delay));
+
+  const taskId = `task_${Date.now()}_${Math.floor(Math.random() * 9000 + 1000)}`;
+  return {
+    success: true,
+    task: { id: taskId },
+    message: "Задача успешно создана (MOCK)"
+  };
+}
+
 const app = new Hono();
 const storage = new DataStorage(CONFIG.DATA_DIR);
 const taskManager = new TaskManager(CONFIG.DATA_DIR);
 
-// Routes
 
 app.get("/", (c) => {
   return c.json({
@@ -126,14 +626,14 @@ app.post("/api/crawl", async (c) => {
   let totalDuplicates = 0;
 
   try {
-    Logger.info(`Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
+    console.log(`ℹ️  Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
 
     const existingIds = await storage.getExistingIds();
     const existingContent = await storage.getExistingContent();
-    Logger.info(`Database: ${existingIds.size} posts`);
+    console.log(`ℹ️  Database: ${existingIds.size} posts`);
 
     for (const url of CONFIG.TELEGRAM_URLS) {
-      Logger.info(`Crawling: ${url}`);
+      console.log(`ℹ️  Crawling: ${url}`);
       const page = await browser.newPage();
 
       try {
@@ -145,13 +645,13 @@ app.post("/api/crawl", async (c) => {
         });
 
         if (newPosts.length === 0) {
-          Logger.warn(`  No new posts from ${url}`);
+          console.warn(`⚠️   No new posts from ${url}`);
           continue;
         }
 
         const result = await storage.saveNewJobs(newPosts);
 
-        Logger.info(`  Saved: ${result.saved.length}, Duplicates: ${result.skipped}`);
+        console.log(`ℹ️    Saved: ${result.saved.length}, Duplicates: ${result.skipped}`);
 
         allCollected.push(...result.saved);
         totalDuplicates += result.skipped;
@@ -180,7 +680,7 @@ app.post("/api/crawl", async (c) => {
       posts: allCollected,
     });
   } catch (error) {
-    Logger.error("Crawl failed", error);
+    console.error(`❌ Crawl failed:`, error);
     return c.json(
       { success: false, error: `Crawl failed: ${String(error)}` },
       500
@@ -214,7 +714,6 @@ app.get("/api/stats", async (c) => {
   }
 });
 
-// Task Management Endpoints
 
 app.post("/api/tasks", async (c) => {
   try {
@@ -318,7 +817,6 @@ app.get("/api/tasks/status/:status", async (c) => {
   }
 });
 
-// Task Workflow Endpoints
 
 app.post("/api/tasks/:id/validate", async (c) => {
   try {
@@ -433,7 +931,6 @@ app.get("/api/tasks/workflow/:id", async (c) => {
   }
 });
 
-// Telegram Publishing Endpoints
 
 app.post("/api/tasks/:id/publish", async (c) => {
   try {
@@ -445,7 +942,6 @@ app.post("/api/tasks/:id/publish", async (c) => {
       return c.json({ success: false, error: "Task not found" }, 404);
     }
 
-    // Use provided token or default
     const botToken = data.botToken || process.env.TELEGRAM_BOT_TOKEN || "";
     const botName = data.botName || "doindeadlinebot";
 
@@ -466,7 +962,6 @@ app.post("/api/tasks/:id/publish", async (c) => {
       );
     }
 
-    // Update task status to published
     await taskManager.updateTask(taskId, { status: "completed" });
 
     return c.json({
@@ -480,63 +975,653 @@ app.post("/api/tasks/:id/publish", async (c) => {
   }
 });
 
+// ==============================
+// Роут для удаления задач через бота API
+// ==============================
+// ==============================
+// Типы для API бота
+// ==============================
+interface BotApiTask {
+  id: number;
+  task_id?: number;
+  title?: string;
+  status?: string;
+}
+
+interface BotApiResponse {
+  success?: boolean;
+  task?: {
+    id: number | string;
+    status?: string;
+  };
+  tasks?: BotApiTask[];
+  detail?: string | Array<{ loc: string[]; msg: string; type: string }>;
+  message?: string;
+}
+
+// ==============================
+// Роут для удаления задач через бота API
+// ==============================
 app.delete("/tasks/delete", async (c) => {
-try {
-    const dataDir = path.join(process.cwd(), 'data');
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
     
-    try {
-      await fs.access(dataDir);
-    } catch {
+    if (!BOT_TOKEN) {
       return c.json({
-        success: true,
-        message: "Data directory doesn't exist, nothing to delete",
-        deleted: 0
-      });
+        success: false,
+        error: "BOT_TOKEN environment variable is required"
+      }, 500);
     }
-
-    let deletedCount = 0;
-    let errors: string[] = [];
-
-    const items = await fs.readdir(dataDir);
     
-    for (const item of items) {
-      try {
-        const itemPath = path.join(dataDir, item);
-        const stat = await fs.stat(itemPath);
-        
-        if (stat.isDirectory()) {
-          await deleteFolderContents(itemPath);
-          deletedCount++;
-        } else {
-          await fs.unlink(itemPath);
-          deletedCount++;
-        }
-      } catch (error) {
-        errors.push(`Failed to delete ${item}: ${error}`);
-      }
+    console.log("🔄 Received DELETE request to /tasks/delete");
+    
+    let taskIds: string[] = [];
+    let deleteFiles = true;
+    let clearAll = false;
+    
+    // Пытаемся получить тело запроса
+    try {
+      const body = await c.req.json();
+      console.log("📝 Request body received");
+      
+      taskIds = body.taskIds || [];
+      deleteFiles = body.deleteFiles !== undefined ? body.deleteFiles : true;
+      clearAll = body.clearAll || false;
+      
+      console.log("📊 Parsed parameters:", { 
+        taskIdsCount: taskIds.length,
+        deleteFiles, 
+        clearAll 
+      });
+    } catch (jsonError) {
+      console.warn("⚠️  Failed to parse JSON body:", jsonError);
     }
+    
+    const dataDir = path.join(process.cwd(), 'data');
+    let deletedCount = 0;
+    let botDeletedCount = 0;
+    let errors: string[] = [];
+    const botResults = [];
+
+    // 1. Удаление задач через API бота
+    if (clearAll || (taskIds && Array.isArray(taskIds) && taskIds.length > 0)) {
+      console.log("🔄 Starting task deletion via bot API...");
+      
+      const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+      
+      try {
+        if (clearAll) {
+          console.log("🗑️  Deleting all cancelled tasks...");
+          
+          try {
+            const result = await api.deleteAllCancelledTasks();
+            botDeletedCount++;
+            botResults.push({ 
+              status: 'deleted',
+              type: 'all_cancelled',
+              result
+            });
+            console.log(`✅ All cancelled tasks deleted via bot API`);
+          } catch (apiError) {
+            const errorMsg = `Error deleting all cancelled tasks: ${apiError}`;
+            errors.push(errorMsg);
+            botResults.push({ 
+              status: 'failed',
+              type: 'all_cancelled',
+              error: errorMsg 
+            });
+            console.error(`❌ ${errorMsg}`);
+          }
+        } else if (taskIds.length > 0) {
+          console.log(`🗑️  Deleting ${taskIds.length} specific tasks via bot API...`);
+          
+          for (const taskId of taskIds) {
+            try {
+              const result = await api.deleteTask(taskId);
+              botDeletedCount++;
+              botResults.push({ 
+                taskId, 
+                status: 'deleted',
+                result
+              });
+              console.log(`✅ Deleted task ${taskId} via bot API`);
+              
+              // Пауза между запросами
+              const delay = Math.random() * (parseInt(process.env.API_DELAY_MAX || '100') - parseInt(process.env.API_DELAY_MIN || '50')) + parseInt(process.env.API_DELAY_MIN || '50');
+              await new Promise(resolve => setTimeout(resolve, delay));
+            } catch (taskError) {
+              const errorMsg = `Error deleting task ${taskId}: ${taskError}`;
+              errors.push(errorMsg);
+              botResults.push({ 
+                taskId, 
+                status: 'failed', 
+                error: errorMsg 
+              });
+              console.error(`❌ ${errorMsg}`);
+            }
+          }
+        }
+      } catch (apiError) {
+        const errorMsg = `Bot API error: ${apiError}`;
+        errors.push(errorMsg);
+        console.error(`❌ ${errorMsg}`);
+      }
+      
+      console.log(`📊 Bot API deletion completed: ${botDeletedCount} tasks deleted`);
+    }
+
+    // 2. Удаление файлов из директории data (если включено)
+    if (deleteFiles) {
+      console.log("🗑️  Starting file deletion from data directory...");
+      
+      try {
+        await fs.access(dataDir);
+        
+        const items = await fs.readdir(dataDir);
+        console.log(`📁 Found ${items.length} items in data directory`);
+        
+        for (const item of items) {
+          try {
+            const itemPath = path.join(dataDir, item);
+            const stat = await fs.stat(itemPath);
+            
+            if (stat.isDirectory()) {
+              console.log(`📂 Deleting directory: ${item}`);
+              await deleteFolderContents(itemPath);
+              await fs.rmdir(itemPath);
+              deletedCount++;
+              console.log(`✅ Deleted directory: ${item}`);
+            } else {
+              console.log(`📄 Deleting file: ${item}`);
+              await fs.unlink(itemPath);
+              deletedCount++;
+              console.log(`✅ Deleted file: ${item}`);
+            }
+          } catch (error) {
+            const errorMsg = `Failed to delete ${item}: ${error}`;
+            errors.push(errorMsg);
+            console.error(`❌ ${errorMsg}`);
+          }
+        }
+        
+        console.log(`📊 File deletion completed: ${deletedCount} files deleted from data directory`);
+      } catch {
+        console.log("ℹ️  Data directory doesn't exist, skipping file deletion");
+      }
+    } else {
+      console.log("ℹ️  File deletion skipped (deleteFiles: false)");
+    }
+
+    const totalDeleted = botDeletedCount + deletedCount;
+
+    console.log("📊 Final statistics:", {
+      botDeleted: botDeletedCount,
+      fileDeleted: deletedCount,
+      totalDeleted: totalDeleted,
+      errorsCount: errors.length
+    });
 
     if (errors.length > 0) {
       return c.json({
         success: false,
-        message: `Partially deleted ${deletedCount} items with errors`,
-        deleted: deletedCount,
-        errors: errors
+        message: `Partially deleted with ${errors.length} errors`,
+        botDeleted: botDeletedCount,
+        fileDeleted: deletedCount,
+        totalDeleted: totalDeleted,
+        botResults: botResults,
+        errors: errors.slice(0, 10)
       }, 207);
     }
 
-    Logger.info(`Deleted ${deletedCount} items from data directory`);
+    return c.json({
+      success: true,
+      message: `Successfully deleted ${totalDeleted} items`,
+      botDeleted: botDeletedCount,
+      fileDeleted: deletedCount,
+      totalDeleted: totalDeleted,
+      botResults: botResults
+    });
+
+  } catch (error) {
+    console.error("❌ Failed to delete tasks and data:", error);
+    return c.json({
+      success: false,
+      error: "Failed to delete tasks and data",
+      details: String(error)
+    }, 500);
+  }
+});
+
+// ==============================
+// Роут для отправки одной задачи в бота API
+// ==============================
+app.post("/tasks/send-one", async (c) => {
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
+
+    if (!BOT_TOKEN) {
+      return c.json({
+        success: false,
+        error: "BOT_TOKEN environment variable is required"
+      }, 400);
+    }
+
+    let body;
+    try {
+      const rawBody = await c.req.text();
+      body = JSON.parse(rawBody);
+    } catch (parseError) {
+      return c.json({
+        success: false,
+        error: "Invalid JSON in request body",
+        details: String(parseError)
+      }, 400);
+    }
+
+    // Поддерживаем как jobId, так и id
+    const jobId = body.jobId || body.id;
+
+    if (!jobId) {
+      return c.json({
+        success: false,
+        error: "jobId or id is required"
+      }, 400);
+    }
+
+    console.log(`ℹ️  Sending single job: ${jobId}`);
+
+    // Загружаем все задачи
+    const jobs = await loadJobsFromDataFolder();
+
+    // Ищем нужную задачу
+    const rawJob = jobs.find(j => j.id === jobId);
+
+    if (!rawJob) {
+      return c.json({
+        success: false,
+        error: `Job with id ${jobId} not found`
+      }, 404);
+    }
+
+    // Проверяем, не отправляли ли уже эту задачу
+    const sentJobsDB = await loadSentJobsDB();
+    if (sentJobsDB[jobId]) {
+      return c.json({
+        success: false,
+        error: `Job ${jobId} already sent`,
+        sentAt: sentJobsDB[jobId].sent_date
+      }, 409);
+    }
+
+    // Структурируем задачу
+    const structuredJob = await convertToStructuredJob({
+      ...rawJob,
+      id: jobId
+    });
+
+    // ВАЛИДАЦИЯ с новой функцией
+    const validation = isValidJob(structuredJob);
+    if (!validation.valid) {
+      return c.json({
+        success: false,
+        error: "Job skipped: Invalid job",
+        title: structuredJob.title,
+        reason: validation.reason
+      }, 400);
+    }
+
+    console.log(`📝 Structured job:`, {
+      title: structuredJob.title.substring(0, 50),
+      budget: `${structuredJob.budget_from}-${structuredJob.budget_to}`,
+      tags: structuredJob.tags
+    });
+
+    // Отправляем в API
+    const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+
+    const result = await api.createTask({
+      jobTitle: structuredJob.title,
+      description: structuredJob.description,
+      budgetFrom: structuredJob.budget_from,
+      budgetTo: structuredJob.budget_to,
+      tags: structuredJob.tags,
+      deadline: structuredJob.deadline
+    });
+
+    // Сохраняем в базу отправленных задач
+    const sentJobRecord: SentJobRecord = {
+      task_id: String(result.task_id),
+      sent_date: new Date().toISOString(),
+      status: "sent",
+      original_title: rawJob.title || structuredJob.title,
+      structured_title: structuredJob.title,
+      budget: structuredJob.budget_from ?
+        `${structuredJob.budget_from}-${structuredJob.budget_to}` : "нет",
+      bot_response: result
+    };
+
+    sentJobsDB[jobId] = sentJobRecord;
+    await saveSentJobsDB(sentJobsDB);
+
+    console.log(`✅ Job ${jobId} sent successfully. API Task ID: ${result.task_id}`);
+
+    return c.json({
+      success: true,
+      message: `Job ${jobId} sent successfully`,
+      jobId,
+      apiTaskId: result.task_id,
+      structuredJob: {
+        title: structuredJob.title,
+        budget_from: structuredJob.budget_from,
+        budget_to: structuredJob.budget_to,
+        tags: structuredJob.tags,
+        deadline: structuredJob.deadline
+      }
+    });
+
+  } catch (error: any) {
+    console.error(`❌ Failed to send single job:`, error);
+    return c.json({
+      success: false,
+      error: "Failed to send job",
+      details: error.message || String(error)
+    }, 500);
+  }
+});
+
+// ==============================
+// Роут для отправки задач в бота API
+// ==============================
+app.post("/tasks/send", async (c) => {
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
+    
+    if (!BOT_TOKEN) {
+      return c.json({ 
+        success: false, 
+        error: "BOT_TOKEN environment variable is required" 
+      }, 400);
+    }
+    
+    // Загружаем задачи из папки data
+    const jobs = await loadJobsFromDataFolder();
+    
+    if (!jobs || !Array.isArray(jobs) || jobs.length === 0) {
+      return c.json({ success: false, error: "No jobs found in data folder" }, 400);
+    }
+    
+    console.log(`ℹ️  Total jobs loaded: ${jobs.length}`);
+    
+    // Настройки
+    const MAX_JOBS_TO_PROCESS = process.env.MAX_JOBS_TO_PROCESS ? 
+      parseInt(process.env.MAX_JOBS_TO_PROCESS) : 15;
+    const jobsToProcess = jobs.slice(0, MAX_JOBS_TO_PROCESS);
+    
+    let sentCount = 0;
+    let skippedCount = 0;
+    let errors: string[] = [];
+    const results: any[] = [];
+    
+    const sentJobsDB = await loadSentJobsDB();
+    const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+
+    for (let i = 0; i < jobsToProcess.length; i++) {
+      const rawJob = jobsToProcess[i];
+      const jobId = rawJob.id || rawJob.originalId || `job_${Date.now()}_${i}`;
+      
+      // Проверяем, не отправляли ли уже эту задачу
+      if (sentJobsDB[jobId]) {
+        skippedCount++;
+        console.warn(`⚠️  Job ${jobId} already sent, skipping`);
+        continue;
+      }
+
+      try {
+        console.log(`ℹ️  Processing job ${i + 1}/${jobsToProcess.length}: ${rawJob.title?.substring(0, 50)}...`);
+        
+        // Структурируем задачу
+        const structuredJob = await convertToStructuredJob({
+          ...rawJob,
+          id: jobId
+        });
+
+        try {
+          // Реальная отправка в API бота
+          const result = await api.createTask({
+            jobTitle: structuredJob.title,
+            description: structuredJob.description,
+            budgetFrom: structuredJob.budget_from,
+            budgetTo: structuredJob.budget_to,
+            tags: structuredJob.tags,
+            deadline: structuredJob.deadline
+          });
+          const taskId = result.task_id;
+
+          if (taskId) {
+            // Сохраняем в базу отправленных задач
+            const sentJobRecord: SentJobRecord = {
+              task_id: taskId.toString(),
+              sent_date: new Date().toISOString(),
+              status: "sent",
+              original_title: rawJob.title || structuredJob.title,
+              structured_title: structuredJob.title,
+              budget: structuredJob.budget_from ? 
+                `${structuredJob.budget_from}-${structuredJob.budget_to}` : "нет",
+              bot_response: result
+            };
+
+            sentJobsDB[jobId] = sentJobRecord;
+
+            sentCount++;
+            results.push({
+              jobId,
+              taskId,
+              title: structuredJob.title,
+              original_title: rawJob.title,
+              budget: structuredJob.budget_from ? 
+                `${structuredJob.budget_from}-${structuredJob.budget_to}` : "нет",
+              original_budget: rawJob.budget || "нет",
+              tags: structuredJob.tags,
+              deadline: structuredJob.deadline,
+              status: "success",
+              bot_response: result
+            });
+
+            console.log(`✅ Sent job ${jobId} -> bot task ${taskId}`);
+          } else {
+            throw new Error('No task_id in response');
+          }
+          
+          // Пауза между отправками
+          const delay = Math.random() * (parseInt(process.env.API_DELAY_MAX || '100') - parseInt(process.env.API_DELAY_MIN || '50')) + parseInt(process.env.API_DELAY_MIN || '50');
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } catch (apiError: any) {
+          const msg = `API error for job ${jobId}: ${apiError.message || String(apiError)}`;
+          errors.push(msg);
+          console.error(`❌ ${msg}`);
+          results.push({
+            jobId,
+            title: structuredJob.title,
+            status: "failed",
+            error: msg
+          });
+        }
+
+      } catch (error: any) {
+        const msg = `Processing error for job ${jobId}: ${error.message || String(error)}`;
+        errors.push(msg);
+        console.error(`❌ ${msg}`, error);
+      }
+    }
+
+    // Сохраняем обновленную базу отправленных задач
+    await saveSentJobsDB(sentJobsDB);
+
+    const report = {
+      timestamp: new Date().toISOString(),
+      statistics: {
+        total: jobsToProcess.length,
+        sent: sentCount,
+        skipped: skippedCount,
+        errors: errors.length
+      },
+      results,
+      errors: errors.length > 0 ? errors.slice(0, 10) : undefined,
+      config: {
+        bot_api_url: BOT_API_URL,
+        max_jobs_processed: MAX_JOBS_TO_PROCESS
+      }
+    };
+
+    return c.json({
+      success: true,
+      message: `Processed ${jobsToProcess.length} jobs from data folder`,
+      report
+    });
+
+  } catch (error: any) {
+    console.error(`❌ Failed to send tasks:`, error);
+    return c.json({
+      success: false,
+      error: "Failed to send tasks",
+      details: error.message || String(error)
+    }, 500);
+  }
+});
+
+// ==============================
+// Вспомогательная функция для форматирования Telegram сообщения
+// ==============================
+function formatTelegramMessage(job: any): string {
+  const lines = [];
+  
+  // Заголовок
+  lines.push(`<b>${job.title}</b>\n`);
+  
+  // Описание
+  if (job.description) {
+    const desc = job.description.length > 1500 
+      ? job.description.substring(0, 1500) + '...' 
+      : job.description;
+    lines.push(`${desc}\n`);
+  }
+  
+  // Бюджет
+  if (job.budget_from || job.budget_to) {
+    const budget = job.budget_from && job.budget_to 
+      ? `${job.budget_from} - ${job.budget_to} руб.`
+      : job.budget_from 
+        ? `от ${job.budget_from} руб.`
+        : job.budget_to 
+          ? `до ${job.budget_to} руб.`
+          : 'Договорная';
+    lines.push(`💰 <b>Бюджет:</b> ${budget}`);
+  }
+  
+  // Срок
+  if (job.deadline) {
+    lines.push(`⏰ <b>Срок:</b> ${job.deadline} дней`);
+  }
+  
+  // Теги
+  if (job.tags && job.tags.length > 0) {
+    lines.push(`🏷️ <b>Теги:</b> ${job.tags.slice(0, 5).join(', ')}`);
+  }
+  
+  // Ссылка на оригинал
+  if (job.url) {
+    lines.push(`\n🔗 <a href="${job.url}">Ссылка на задание</a>`);
+  }
+  
+  // Ссылка на канал
+  if (job.channelUrl) {
+    lines.push(`📢 <a href="${job.channelUrl}">Канал с заданиями</a>`);
+  }
+  
+  return lines.join('\n');
+}
+
+// ==============================
+// Эндпоинт для проверки здоровья
+// ==============================
+
+app.get("/tasks/health", async (c) => {
+  try {
+    const dataDirExists = await fs.access(path.join(process.cwd(), 'data'))
+      .then(() => true)
+      .catch(() => false);
+    
+    const dbExists = await fs.access(path.join(process.cwd(), 'sent_jobs_database.json'))
+      .then(() => true)
+      .catch(() => false);
     
     return c.json({
       success: true,
-      message: `Successfully deleted ${deletedCount} items from data directory`,
-      deleted: deletedCount
+      status: "operational",
+      checks: {
+        data_directory: dataDirExists ? "exists" : "missing",
+        jobs_database: dbExists ? "exists" : "missing",
+        timestamp: new Date().toISOString()
+      }
     });
   } catch (error) {
-    Logger.error("Failed to delete data directory contents", error);
     return c.json({
       success: false,
-      error: "Failed to delete data directory contents",
+      status: "degraded",
+      error: String(error)
+    }, 500);
+  }
+});
+
+// ==============================
+// Эндпоинт для тестирования структурирования
+// ==============================
+
+app.post("/tasks/test-structure", async (c) => {
+  try {
+    const { title, description, channelUrl } = await c.req.json();
+    
+    const testJob = {
+      id: "test_job",
+      title: title || "Нужен Python разработчик для создания бота",
+      description: description || "Нужно создать телеграм бота на Python. Бюджет: 5000-10000 руб. Срок: 3 дня. Требуется опыт работы с aiogram.",
+      channelUrl: channelUrl || "https://t.me/freelance_jobs",
+      url: "https://t.me/some_post",
+      scrapedAt: new Date().toISOString()
+    };
+    
+    const structured = await convertToStructuredJob(testJob);
+    
+    return c.json({
+      success: true,
+      input: testJob,
+      output: structured,
+      processing: {
+        title: getCleanTitle(testJob.title, testJob.description),
+        description: getCleanDescription(
+          getCleanTitle(testJob.title, testJob.description), 
+          testJob.description
+        ),
+        budget: extractBudget(testJob.title + " " + testJob.description),
+        tags: getIntelligentTags(
+          getCleanTitle(testJob.title, testJob.description),
+          getCleanDescription(
+            getCleanTitle(testJob.title, testJob.description),
+            testJob.description
+          )
+        ),
+        deadline: estimateDeadline(testJob.description)
+      }
+    });
+    
+  } catch (error) {
+    Logger.error("Test structure failed", error);
+    return c.json({
+      success: false,
+      error: "Test structure failed",
       details: String(error)
     }, 500);
   }
@@ -544,17 +1629,383 @@ try {
 
 const PORT = 3000;
 
+// ==============================
+// Эндпоинт для получения несправленных задач
+// ==============================
+
+app.get("/tasks/unsent", async (c) => {
+  try {
+    const jobs = await loadJobsFromDataFolder();
+    const sentJobsDB = await loadSentJobsDB();
+
+    const unsentJobs = jobs.filter(job => {
+      const jobId = job.id || job.originalId || `job_${job.title}`;
+      return !sentJobsDB[jobId];
+    });
+
+    return c.json({
+      success: true,
+      total_jobs: jobs.length,
+      sent_jobs: Object.keys(sentJobsDB).length,
+      unsent_count: unsentJobs.length,
+      unsent_jobs: unsentJobs.map(job => ({
+        id: job.id || job.originalId,
+        title: job.title?.substring(0, 80),
+        budget: job.budget,
+        description: job.description?.substring(0, 100)
+      }))
+    });
+  } catch (error) {
+    Logger.error("Failed to get unsent jobs", error);
+    return c.json({ success: false, error: "Failed to get unsent jobs" }, 500);
+  }
+});
+
+// ==============================
+// Получить все задачи с API бота
+// ==============================
+
+app.get("/api/bot/tasks", async (c) => {
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
+
+    if (!BOT_TOKEN) {
+      return c.json({ success: false, error: "BOT_TOKEN not set" }, 400);
+    }
+
+    const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+    const response = await api.getMyTasks(0, 1000);
+    
+    // Берем массив задач из разных возможных ключей ответа
+    const tasks = Array.isArray(response) ? response : 
+                  Array.isArray(response?.tasks) ? response.tasks : 
+                  [];
+
+    const taskList = tasks.map(t => ({
+      id: t.id,
+      title: t.title?.substring(0, 80) || 'No title',
+      status: t.status,
+      budget: t.budget
+    }));
+
+    return c.json({
+      success: true,
+      count: taskList.length,
+      tasks: taskList
+    });
+  } catch (error: any) {
+    console.error("Failed to get bot tasks:", error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ==============================
+// Удалить задачу по ID
+// ==============================
+
+app.delete("/api/bot/tasks/:id", async (c) => {
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
+    const taskId = c.req.param("id");
+
+    if (!BOT_TOKEN) {
+      return c.json({ success: false, error: "BOT_TOKEN not set" }, 400);
+    }
+
+    if (!taskId) {
+      return c.json({ success: false, error: "Task ID is required" }, 400);
+    }
+
+    console.log(`🗑️  Deleting task: ${taskId}`);
+
+    const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+    const result = await api.deleteTask(taskId);
+
+    return c.json({
+      success: true,
+      message: `Task ${taskId} deleted`,
+      result
+    });
+  } catch (error: any) {
+    console.error(`Failed to delete task:`, error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ==============================
+// Удалить все задачи по одной
+// ==============================
+
+app.delete("/api/bot/tasks-all", async (c) => {
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
+
+    if (!BOT_TOKEN) {
+      return c.json({ success: false, error: "BOT_TOKEN not set" }, 400);
+    }
+
+    const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+    
+    // Получаем все задачи
+    const response = await api.getMyTasks(0, 1000);
+    const tasks = Array.isArray(response) ? response : 
+                  Array.isArray(response?.tasks) ? response.tasks : 
+                  [];
+
+    console.log(`🗑️  Starting to delete ${tasks.length} tasks...`);
+
+    let deletedCount = 0;
+    let failedCount = 0;
+    const results: any[] = [];
+    const errors: string[] = [];
+
+    for (const task of tasks) {
+      try {
+        console.log(`🗑️  Deleting ${deletedCount + failedCount + 1}/${tasks.length}: ID ${task.id} - ${task.title?.substring(0, 40)}`);
+        
+        await api.deleteTask(String(task.id));
+        deletedCount++;
+        results.push({
+          id: task.id,
+          title: task.title?.substring(0, 50),
+          status: "✅ deleted"
+        });
+
+        console.log(`✅ Deleted: ${task.id}`);
+
+        // Задержка между удалениями
+        const delay = Math.random() * 500 + 300; // 0.3-0.8 сек
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+      } catch (error: any) {
+        failedCount++;
+        const msg = `Failed to delete task ${task.id}: ${error.message}`;
+        errors.push(msg);
+        results.push({
+          id: task.id,
+          title: task.title?.substring(0, 50),
+          status: "❌ failed",
+          error: error.message
+        });
+        console.error(`❌ ${msg}`);
+      }
+    }
+
+    return c.json({
+      success: deletedCount > 0,
+      message: `Deleted ${deletedCount} tasks, failed ${failedCount}`,
+      statistics: {
+        total: tasks.length,
+        deleted: deletedCount,
+        failed: failedCount
+      },
+      results,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error: any) {
+    console.error(`Failed to delete all tasks:`, error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ==============================
+// Эндпоинт для отправки всех несправленных задач по одной
+// ==============================
+
+app.post("/tasks/send-all-unsent", async (c) => {
+  try {
+    const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
+    const BOT_TOKEN = process.env.BOT_TOKEN;
+
+    if (!BOT_TOKEN) {
+      return c.json({ 
+        success: false, 
+        error: "BOT_TOKEN environment variable is required" 
+      }, 400);
+    }
+
+    const jobs = await loadJobsFromDataFolder();
+    const sentJobsDB = await loadSentJobsDB();
+    const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
+
+    // Удаляем все старые задачи перед отправкой новых
+    console.log("🗑️  Deleting all old tasks from bot...");
+    const existingTasks = await api.getMyTasks(0, 1000);
+    const tasksToDelete = Array.isArray(existingTasks) ? existingTasks : 
+                          Array.isArray(existingTasks?.tasks) ? existingTasks.tasks : [];
+    
+    for (const task of tasksToDelete) {
+      try {
+        await api.deleteTask(String(task.id));
+        // Задержка между удалениями
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 300));
+      } catch (err) {
+        console.error(`Failed to delete task ${task.id}:`, err);
+      }
+    }
+    console.log(`✅ Deleted ${tasksToDelete.length} old tasks`);
+
+    // Фильтруем неотправленные и не-дублирующиеся задачи
+    const seenTitles = new Set<string>();
+    const unsentJobs = jobs.filter(job => {
+      const jobId = job.id || job.originalId || `job_${job.title}`;
+      const titleHash = (job.title || '').toLowerCase().trim();
+      
+      // Пропускаем если уже отправляли
+      if (sentJobsDB[jobId]) {
+        return false;
+      }
+      
+      // Пропускаем дубликаты в текущей партии
+      if (seenTitles.has(titleHash)) {
+        console.log(`⚠️  Пропущен дубликат: ${job.title?.substring(0, 50)}...`);
+        return false;
+      }
+      
+      seenTitles.add(titleHash);
+      return true;
+    });
+
+    if (unsentJobs.length === 0) {
+      return c.json({
+        success: true,
+        message: "All jobs already sent",
+        sent: 0
+      });
+    }
+
+    console.log(`ℹ️  Starting to send ${unsentJobs.length} unsent jobs...`);
+
+    let sentCount = 0;
+    let failedCount = 0;
+    const results: any[] = [];
+    const errors: string[] = [];
+
+    for (const rawJob of unsentJobs) {
+      const jobId = rawJob.id || rawJob.originalId || `job_${rawJob.title}`;
+
+      try {
+        console.log(`📝 Processing: ${rawJob.title?.substring(0, 50)}...`);
+
+        // Структурируем задачу
+        const structuredJob = await convertToStructuredJob({
+          ...rawJob,
+          id: jobId
+        });
+
+        // ВАЛИДАЦИЯ с новой функцией
+        const validation = isValidJob(structuredJob);
+        if (!validation.valid) {
+          failedCount++;
+          errors.push(`Skipped ${jobId}: ${validation.reason} - "${structuredJob.title}"`);
+          continue;
+        }
+
+        // Применяем скидку 20% на бюджет
+        const discountPercent = 0.20;
+        const discountedBudgetFrom = structuredJob.budget_from ? 
+          Math.round(structuredJob.budget_from * (1 - discountPercent)) : null;
+        const discountedBudgetTo = structuredJob.budget_to ? 
+          Math.round(structuredJob.budget_to * (1 - discountPercent)) : null;
+        
+        console.log(`💰 Оригинальный: ${structuredJob.budget_from}-${structuredJob.budget_to}, Со скидкой 20%: ${discountedBudgetFrom}-${discountedBudgetTo}`);
+        
+        // Отправляем в API со скидкой
+        const result = await api.createTask({
+          jobTitle: structuredJob.title,
+          description: structuredJob.description,
+          budgetFrom: discountedBudgetFrom,
+          budgetTo: discountedBudgetTo,
+          tags: structuredJob.tags,
+          deadline: structuredJob.deadline
+        });
+
+        // Сохраняем в базу
+        sentJobsDB[jobId] = {
+          task_id: String(result.task_id),
+          sent_date: new Date().toISOString(),
+          status: "sent",
+          original_title: rawJob.title,
+          structured_title: structuredJob.title,
+          original_budget: structuredJob.budget_from ? 
+            `${structuredJob.budget_from}-${structuredJob.budget_to}` : "нет",
+          discounted_budget: discountedBudgetFrom ? 
+            `${discountedBudgetFrom}-${discountedBudgetTo}` : "нет"
+        };
+
+        sentCount++;
+        results.push({
+          jobId,
+          title: structuredJob.title,
+          status: "✅ sent",
+          apiTaskId: result.task_id
+        });
+
+        console.log(`✅ Sent: ${structuredJob.title.substring(0, 50)}`);
+
+        // Задержка между отправками
+        const delay = Math.random() * 1000 + 500; // 0.5-1.5 сек
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+      } catch (error: any) {
+        failedCount++;
+        const msg = `Failed to send "${rawJob.title?.substring(0, 50)}": ${error.message}`;
+        errors.push(msg);
+        results.push({
+          jobId,
+          title: rawJob.title?.substring(0, 50),
+          status: "❌ failed",
+          error: error.message
+        });
+        console.error(`❌ ${msg}`);
+      }
+    }
+
+    // Сохраняем обновленную базу
+    await saveSentJobsDB(sentJobsDB);
+
+    return c.json({
+      success: true,
+      message: `Sent ${sentCount} jobs, failed ${failedCount}`,
+      statistics: {
+        total: unsentJobs.length,
+        sent: sentCount,
+        failed: failedCount
+      },
+      results,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error: any) {
+    console.error(`❌ Failed to send unsent tasks:`, error);
+    return c.json({
+      success: false,
+      error: "Failed to send unsent tasks",
+      details: error.message || String(error)
+    }, 500);
+  }
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(`http://${req.headers.host}${req.url}`);
     
     let body: any = undefined;
     if (req.method !== "GET" && req.method !== "HEAD") {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(chunk);
-      }
-      body = Buffer.concat(chunks).toString();
+      body = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", (chunk) => {
+          data += chunk;
+        });
+        req.on("end", () => {
+          resolve(data);
+        });
+        req.on("error", reject);
+      });
     }
 
     const request = new Request(url, {

@@ -12,7 +12,7 @@ async function crawl(): Promise<void> {
   oneWeekAgo.setDate(oneWeekAgo.getDate() - CONFIG.MAX_POST_AGE_DAYS);
 
   try {
-    Logger.section("Starting Telegram Crawl (Last Week Only)");
+    Logger.info("Starting Telegram Crawl (Last Week Only)");
     Logger.info(`Looking for posts newer than: ${oneWeekAgo.toLocaleDateString()}`);
 
     const existingIds = await storage.getExistingIds();
@@ -79,7 +79,7 @@ async function crawl(): Promise<void> {
       }
     }
 
-    Logger.section("Final Results");
+    Logger.info("Final Results");
     Logger.success(`Total Saved: ${totalSaved}`);
     Logger.info(`Total Duplicates: ${totalDuplicates}`);
     Logger.info(`Total Filtered by Age: ${totalFilteredByAge}`);

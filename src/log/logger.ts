@@ -1,16 +1,22 @@
+// log/logger.ts
 export class Logger {
-  static info(message: string): void {
-    console.log(`ℹ️  ${message}`);
+  static info(message: string, data?: any): void {
+    if (data) {
+      console.log(`ℹ️  ${message}`, data);
+    } else {
+      console.log(`ℹ️  ${message}`);
+    }
   }
 
   static success(message: string): void {
     console.log(`✅ ${message}`);
   }
 
-  static error(message: string, error?: unknown): void {
-    console.error(`❌ ${message}`);
-    if (error instanceof Error) {
-      console.error(`   ${error.message}`);
+  static error(message: string, error?: any): void {
+    if (error) {
+      console.error(`❌ ${message}`, error);
+    } else {
+      console.error(`❌ ${message}`);
     }
   }
 
@@ -18,15 +24,13 @@ export class Logger {
     console.warn(`⚠️  ${message}`);
   }
 
-  static debug(message: string, data?: unknown): void {
+  static debug(message: string, data?: any): void {
     if (process.env.DEBUG) {
-      console.log(`🔍 ${message}`, data ?? "");
+      if (data) {
+        console.log(`🔍 ${message}`, data);
+      } else {
+        console.log(`🔍 ${message}`);
+      }
     }
-  }
-
-  static section(title: string): void {
-    console.log(`\n${"=".repeat(50)}`);
-    console.log(`📌 ${title}`);
-    console.log(`${"=".repeat(50)}`);
   }
 }
