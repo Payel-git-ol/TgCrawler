@@ -49,5 +49,18 @@ services:
       timeout: 5s
       retries: 5
 
+
+  nocodb:
+    image: nocodb/nocodb:latest
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - nocodb_data:/usr/app/data
+    restart: unless-stopped
+
+
 volumes:
   postgres_data_tgcrawler:
+  nocodb_data:
