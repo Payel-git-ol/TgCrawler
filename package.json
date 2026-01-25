@@ -7,19 +7,27 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "crawl": "tsx src/crawler/crawl-only.ts"
+    "crawl": "tsx src/crawler/crawl-only.ts",
+    "import-json": "tsx scripts/import-json-to-db.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/client": "^7.3.0",
     "cheerio": "^1.0.0-rc.12",
     "hono": "^4.0.0",
+    "pg": "^8.11.3",
     "playwright": "^1.40.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.30",
+    "@types/pg": "^8.10.9",
     "dotenv": "^17.2.3",
+    "prisma": "^7.3.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0"
   }

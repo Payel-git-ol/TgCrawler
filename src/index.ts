@@ -10,6 +10,7 @@ import { TaskManager, TaskRequest } from "./services/tasks/taskManager";
 import { TelegramTaskPublisher } from "./services/tasks/telegramTaskPublisher";
 import { launchBrowser } from "./lounchBrowser";
 import { DeadlineTaskApi } from "./services/deadlineTaskApi";
+import { TaskService } from "./services/database/task";
 import { config } from 'dotenv';
 
 config();
@@ -58,7 +59,6 @@ function getCleanTitle(rawTitle: string, rawDescription: string): string {
   let cleanTitle = rawTitle;
   
   if (!titleIsEmpty) {
-    // Удаляем эмодзи и специальные символы в начале
     cleanTitle = rawTitle
       .replace(/^[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1f926}-\u{1f937}\u{10000}-\u{10FFFF}\u{1f1f0}-\u{1f1ff}\u{1f201}-\u{1f251}📌📝💳🌐〰️#]+/gu, '')
       .replace(/^\s*[📌📝💳🌐〰️#]+\s*/g, '')
@@ -67,7 +67,6 @@ function getCleanTitle(rawTitle: string, rawDescription: string): string {
       .trim();
   }
 
-  // Если названия нет или оно слишком короткое, берем из описания
   if (titleIsEmpty || !cleanTitle || cleanTitle.length < 5) {
     if (rawDescription && rawDescription.length > 20) {
       cleanTitle = rawDescription
@@ -192,16 +191,20 @@ function extractBudget(text: string): { from: number | null; to: number | null }
 }
 
 function isValidJob(structuredJob: any): { valid: boolean; reason?: string } {
-  // Проверка бюджета только
-  if (!structuredJob.budget_from && !structuredJob.budget_to) {
-    return { valid: false, reason: 'Missing budget/price' };
+  // Минимальная проверка: должен быть вменяемый заголовок и описание
+  if (!structuredJob.title || String(structuredJob.title).trim().length < 5) {
+    return { valid: false, reason: "Title too short or missing" };
   }
-  
-  // Бюджет должен быть разумным (больше чем 100 рублей)
+
+  if (!structuredJob.description || String(structuredJob.description).trim().length < 20) {
+    return { valid: false, reason: "Description too short or missing" };
+  }
+
+  // Если бюджет указан, он должен быть разумным (больше чем 100 рублей)
   if (structuredJob.budget_from && structuredJob.budget_from < 100) {
     return { valid: false, reason: `Budget too low: ${structuredJob.budget_from}` };
   }
-  
+
   return { valid: true };
 }
 
@@ -298,7 +301,15 @@ async function convertToStructuredJob(rawJob: any): Promise<any> {
   });
   
   const originalTitle = rawJob.title || rawJob.jobTitle || '';
-  const originalDescription = rawJob.description || rawJob.content || rawJob.text || '';
+  let originalDescription = rawJob.description || rawJob.content || rawJob.text || '';
+  
+  // Удаляем конкретную строку про оплату, если она попала в текст
+  if (originalDescription) {
+    originalDescription = originalDescription
+      .replace(/Оплата:\s*от\s*65\s*250\s*до\s*130\s*000\s*рублей/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
   const originalBudget = rawJob.budget || rawJob.payment || rawJob.price || '';
   const originalWorkType = rawJob.workType || rawJob.type || '';
   const originalTags = rawJob.tags || rawJob.skills || [];
@@ -393,100 +404,30 @@ async function saveSentJobsDB(db: Record<string, SentJobRecord>): Promise<void> 
 }
 
 async function loadJobsFromDataFolder(): Promise<any[]> {
-  const dataDir = path.join(process.cwd(), 'data');
-  let allJobs: any[] = [];
-
   try {
-    const stat = await fs.stat(dataDir).catch(() => null);
-    if (!stat || !stat.isDirectory()) {
-      console.warn(`Data directory not found: ${dataDir}`);
-      return [];
-    }
-
-    const files = await fs.readdir(dataDir);
+    // Загружаем задачи из БД
+    const tasks = await taskService.getAllTasks();
     
-    for (const file of files) {
-      if (file === 'tasks.json' || !file.endsWith('.json')) {
-        continue;
-      }
-
-      const filePath = path.join(dataDir, file);
-      try {
-        const fileContent = await fs.readFile(filePath, 'utf8');
-        const jsonData = JSON.parse(fileContent);
-        
-        console.log(`📁 Processing file: ${file}`);
-        console.log(`   File size: ${fileContent.length} characters`);
-        
-        if (Array.isArray(jsonData)) {
-          console.log(`   File contains array with ${jsonData.length} items`);
-          
-          const jobs = jsonData.map((post: any, index: number) => {
-            if (index < 2) {
-              console.log(`   Item ${index}:`, {
-                id: post.id,
-                title: post.title?.substring(0, 50),
-                description: post.description?.substring(0, 50) + (post.description?.length > 50 ? '...' : ''),
-                workType: post.workType?.substring(0, 50),
-                budget: post.budget,
-                hasFullDescription: post.description && post.description.length > 100
-              });
-            }
-            
-            return {
-              ...post,
-              originalId: post.id || `post_${Date.now()}_${index}`,
-              filename: file,
-              scrapedAt: post.scrapedAt || post.date || new Date().toISOString()
-            };
-          });
-          
-          allJobs = allJobs.concat(jobs);
-          console.log(`ℹ️  Loaded ${jobs.length} posts from ${file}`);
-        } else if (jsonData && typeof jsonData === 'object') {
-          console.log(`   File is an object, keys: ${Object.keys(jsonData).join(', ')}`);
-          
-          // Если файл имеет структуру с ключами
-          if (Array.isArray(jsonData.posts)) {
-            const jobs = jsonData.posts.map((post: any, index: number) => ({
-              ...post,
-              originalId: post.id || `post_${Date.now()}_${index}`,
-              filename: file,
-              scrapedAt: post.scrapedAt || jsonData.scrapedAt || new Date().toISOString()
-            }));
-            allJobs = allJobs.concat(jobs);
-            console.log(`ℹ️  Loaded ${jobs.length} posts from ${file}`);
-          } else if (Array.isArray(jsonData.jobs)) {
-            const jobs = jsonData.jobs.map((job: any, index: number) => ({
-              ...job,
-              originalId: job.id || `job_${Date.now()}_${index}`,
-              filename: file,
-              scrapedAt: job.scrapedAt || jsonData.scrapedAt || new Date().toISOString()
-            }));
-            allJobs = allJobs.concat(jobs);
-            console.log(`ℹ️  Loaded ${jobs.length} jobs from ${file}`);
-          } else {
-            const job = {
-              ...jsonData,
-              originalId: jsonData.id || `single_${Date.now()}`,
-              filename: file,
-              scrapedAt: jsonData.scrapedAt || new Date().toISOString()
-            };
-            allJobs.push(job);
-            console.log(`ℹ️  Loaded 1 job from ${file}`);
-          }
-        }
-      } catch (error) {
-        console.error(`❌ Error reading/parsing ${file}:`, error);
-        continue;
-      }
-    }
-
-    console.log(`ℹ️  Total jobs loaded from data folder: ${allJobs.length}`);
+    console.log(`ℹ️  Total jobs loaded from database: ${tasks.length}`);
     
-    if (allJobs.length > 0) {
+    // Преобразуем задачи из БД в формат, ожидаемый остальным кодом
+    const jobs = tasks.map((task) => ({
+      id: task.id_post,
+      originalId: task.id_post,
+      title: task.title,
+      description: task.description,
+      workType: task.workType,
+      payment: task.payment,
+      deadline: task.deadline,
+      url: task.url,
+      channelUrl: task.channelUrl,
+      scrapedAt: task.scrapedAt,
+      timestamp: task.timestamp,
+    }));
+    
+    if (jobs.length > 0) {
       console.log("\n🔍 DETAILED ANALYSIS OF FIRST 3 JOBS:");
-      allJobs.slice(0, 3).forEach((job, i) => {
+      jobs.slice(0, 3).forEach((job, i) => {
         console.log(`\nJob ${i + 1}:`);
         console.log(`  ID: ${job.id}`);
         console.log(`  Title: ${job.title}`);
@@ -494,15 +435,13 @@ async function loadJobsFromDataFolder(): Promise<any[]> {
         console.log(`  Description: ${job.description?.substring(0, 100)}${job.description?.length > 100 ? '...' : ''}`);
         console.log(`  Description length: ${job.description?.length || 0} chars`);
         console.log(`  Work type: ${job.workType}`);
-        console.log(`  Budget: ${job.budget}`);
         console.log(`  Payment: ${job.payment}`);
-        console.log(`  All keys: ${Object.keys(job).join(', ')}`);
       });
     }
     
-    return allJobs;
+    return jobs;
   } catch (error) {
-    console.error(`❌ Error reading data directory:`, error);
+    console.error(`❌ Error loading jobs from database:`, error);
     return [];
   }
 }
@@ -526,6 +465,7 @@ async function mockSendToAPI(structuredJob: any) {
 const app = new Hono();
 const storage = new DataStorage(CONFIG.DATA_DIR);
 const taskManager = new TaskManager(CONFIG.DATA_DIR);
+const taskService = new TaskService();
 
 
 app.get("/", (c) => {
@@ -557,7 +497,19 @@ app.get("/", (c) => {
 
 app.get("/api/jobs", async (c) => {
   try {
-    const jobs = await storage.loadAllJobs();
+    const tasks = await taskService.getAllTasks();
+    const jobs = tasks.map((task) => ({
+      id: task.id_post,
+      title: task.title,
+      description: task.description,
+      workType: task.workType,
+      payment: task.payment,
+      deadline: task.deadline,
+      url: task.url,
+      channelUrl: task.channelUrl,
+      scrapedAt: task.scrapedAt,
+      timestamp: task.timestamp,
+    }));
     const shuffled = shuffleArray(jobs);
     return c.json({ success: true, count: shuffled.length, jobs: shuffled });
   } catch (error) {
@@ -590,12 +542,25 @@ app.get("/api/file/:filename", async (c) => {
 
 app.get("/api/jobs/:id", async (c) => {
   try {
-    const jobs = await storage.loadJobs();
-    const job = jobs.find((j) => j.id === c.req.param("id"));
+    const postId = c.req.param("id");
+    const task = await taskService.getTaskByPostId(postId);
 
-    if (!job) {
+    if (!task) {
       return c.json({ success: false, error: "Post not found" }, 404);
     }
+
+    const job = {
+      id: task.id_post,
+      title: task.title,
+      description: task.description,
+      workType: task.workType,
+      payment: task.payment,
+      deadline: task.deadline,
+      url: task.url,
+      channelUrl: task.channelUrl,
+      scrapedAt: task.scrapedAt,
+      timestamp: task.timestamp,
+    };
 
     return c.json({ success: true, job });
   } catch (error) {
@@ -606,11 +571,22 @@ app.get("/api/jobs/:id", async (c) => {
 
 app.get("/api/jobs/filter/type/:type", async (c) => {
   try {
-    const jobs = await storage.loadAllJobs();
+    const tasks = await taskService.getAllTasks();
     const type = c.req.param("type").toLowerCase();
-    const filtered = jobs.filter((j) =>
-      j.workType.toLowerCase().includes(type)
-    );
+    const filtered = tasks
+      .filter((t) => t.workType.toLowerCase().includes(type))
+      .map((task) => ({
+        id: task.id_post,
+        title: task.title,
+        description: task.description,
+        workType: task.workType,
+        payment: task.payment,
+        deadline: task.deadline,
+        url: task.url,
+        channelUrl: task.channelUrl,
+        scrapedAt: task.scrapedAt,
+        timestamp: task.timestamp,
+      }));
 
     return c.json({ success: true, count: filtered.length, jobs: filtered });
   } catch (error) {
@@ -628,9 +604,21 @@ app.post("/api/crawl", async (c) => {
   try {
     console.log(`ℹ️  Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
 
-    const existingIds = await storage.getExistingIds();
-    const existingContent = await storage.getExistingContent();
-    console.log(`ℹ️  Database: ${existingIds.size} posts`);
+    // Проверяем подключение к БД
+    try {
+      const dbCount = await taskService.countTasks();
+      console.log(`ℹ️  Database connection OK. Current tasks in DB: ${dbCount}`);
+    } catch (dbError) {
+      console.error(`❌ Database connection error:`, dbError);
+      return c.json(
+        { success: false, error: `Database connection failed: ${String(dbError)}` },
+        500
+      );
+    }
+
+    const existingIds = await taskService.getExistingPostIds();
+    const existingContent = await taskService.getExistingContentHashes();
+    console.log(`ℹ️  Database: ${existingIds.size} existing post IDs, ${existingContent.size} content hashes`);
 
     for (const url of CONFIG.TELEGRAM_URLS) {
       console.log(`ℹ️  Crawling: ${url}`);
@@ -640,7 +628,7 @@ app.post("/api/crawl", async (c) => {
         const allPosts = await scraper.scrape(page, url);
 
         const newPosts = allPosts.filter((p) => {
-          const contentHash = `${p.title}|${p.description}`;
+          const contentHash = `${p.title}|${p.description}`.toLowerCase().trim();
           return !existingIds.has(p.id) && !existingContent.has(contentHash);
         });
 
@@ -649,18 +637,51 @@ app.post("/api/crawl", async (c) => {
           continue;
         }
 
-        const result = await storage.saveNewJobs(newPosts);
+        // Сохраняем в БД
+        const tasksToSave = newPosts.map((post) => ({
+          id_post: post.id,
+          title: post.title,
+          description: post.description,
+          workType: post.workType,
+          payment: post.payment,
+          deadline: post.deadline,
+          url: post.url,
+          channelUrl: post.channelUrl || "",
+          scrapedAt: post.scrapedAt,
+          timestamp: post.timestamp || post.scrapedAt,
+        }));
 
-        console.log(`ℹ️    Saved: ${result.saved.length}, Duplicates: ${result.skipped}`);
+        console.log(`📝 Attempting to save ${tasksToSave.length} tasks to database...`);
+        
+        let savedCount = 0;
+        let skippedCount = 0;
+        
+        try {
+          const result = await taskService.createManyTasks(tasksToSave);
+          savedCount = result.count;
+          skippedCount = newPosts.length - savedCount;
 
-        allCollected.push(...result.saved);
-        totalDuplicates += result.skipped;
+          console.log(`✅ Saved to DB: ${savedCount}, Duplicates: ${skippedCount}`);
+          
+          if (savedCount === 0 && newPosts.length > 0) {
+            console.warn(`⚠️  Warning: ${newPosts.length} posts were not saved. All might be duplicates.`);
+          }
+        } catch (dbError) {
+          console.error(`❌ Database error while saving tasks:`, dbError);
+          Logger.error("Failed to save tasks to database", dbError);
+          // Если ошибка, считаем что ничего не сохранилось
+          savedCount = 0;
+          skippedCount = newPosts.length;
+        }
 
-        // Update existing for next channel
-        result.saved.forEach((p) => {
+        // Обновляем существующие для следующего канала
+        newPosts.forEach((p) => {
           existingIds.add(p.id);
-          existingContent.add(`${p.title}|${p.description}`);
+          existingContent.add(`${p.title}|${p.description}`.toLowerCase().trim());
         });
+
+        allCollected.push(...newPosts.slice(0, savedCount));
+        totalDuplicates += skippedCount;
       } finally {
         await page.close();
       }
@@ -692,19 +713,19 @@ app.post("/api/crawl", async (c) => {
 
 app.get("/api/stats", async (c) => {
   try {
-    const jobs = await storage.loadAllJobs();
+    const tasks = await taskService.getAllTasks();
 
     const stats = {
-      totalPosts: jobs.length,
+      totalPosts: tasks.length,
       workTypes: {} as Record<string, number>,
       paymentTypes: {} as Record<string, number>,
     };
 
-    jobs.forEach((job) => {
-      stats.workTypes[job.workType] =
-        (stats.workTypes[job.workType] || 0) + 1;
-      stats.paymentTypes[job.payment] =
-        (stats.paymentTypes[job.payment] || 0) + 1;
+    tasks.forEach((task) => {
+      stats.workTypes[task.workType] =
+        (stats.workTypes[task.workType] || 0) + 1;
+      stats.paymentTypes[task.payment] =
+        (stats.paymentTypes[task.payment] || 0) + 1;
     });
 
     return c.json({ success: true, stats });
@@ -978,30 +999,6 @@ app.post("/api/tasks/:id/publish", async (c) => {
 // ==============================
 // Роут для удаления задач через бота API
 // ==============================
-// ==============================
-// Типы для API бота
-// ==============================
-interface BotApiTask {
-  id: number;
-  task_id?: number;
-  title?: string;
-  status?: string;
-}
-
-interface BotApiResponse {
-  success?: boolean;
-  task?: {
-    id: number | string;
-    status?: string;
-  };
-  tasks?: BotApiTask[];
-  detail?: string | Array<{ loc: string[]; msg: string; type: string }>;
-  message?: string;
-}
-
-// ==============================
-// Роут для удаления задач через бота API
-// ==============================
 app.delete("/tasks/delete", async (c) => {
   try {
     const BOT_API_URL = process.env.BOT_API_URL || 'https://deadlinetaskbot.productlove.ru/api/v1';
@@ -1019,8 +1016,8 @@ app.delete("/tasks/delete", async (c) => {
     let taskIds: string[] = [];
     let deleteFiles = true;
     let clearAll = false;
+    let clearDatabase: boolean | undefined = undefined; 
     
-    // Пытаемся получить тело запроса
     try {
       const body = await c.req.json();
       console.log("📝 Request body received");
@@ -1028,23 +1025,29 @@ app.delete("/tasks/delete", async (c) => {
       taskIds = body.taskIds || [];
       deleteFiles = body.deleteFiles !== undefined ? body.deleteFiles : true;
       clearAll = body.clearAll || false;
+      clearDatabase = body.clearDatabase !== undefined ? body.clearDatabase : undefined;
       
       console.log("📊 Parsed parameters:", { 
         taskIdsCount: taskIds.length,
         deleteFiles, 
-        clearAll 
+        clearAll,
+        clearDatabase
       });
     } catch (jsonError) {
       console.warn("⚠️  Failed to parse JSON body:", jsonError);
     }
     
+    if (clearDatabase === undefined) {
+      clearDatabase = deleteFiles;
+    }
+    
     const dataDir = path.join(process.cwd(), 'data');
     let deletedCount = 0;
     let botDeletedCount = 0;
+    let dbDeletedCount = 0;
     let errors: string[] = [];
     const botResults = [];
 
-    // 1. Удаление задач через API бота
     if (clearAll || (taskIds && Array.isArray(taskIds) && taskIds.length > 0)) {
       console.log("🔄 Starting task deletion via bot API...");
       
@@ -1087,7 +1090,6 @@ app.delete("/tasks/delete", async (c) => {
               });
               console.log(`✅ Deleted task ${taskId} via bot API`);
               
-              // Пауза между запросами
               const delay = Math.random() * (parseInt(process.env.API_DELAY_MAX || '100') - parseInt(process.env.API_DELAY_MIN || '50')) + parseInt(process.env.API_DELAY_MIN || '50');
               await new Promise(resolve => setTimeout(resolve, delay));
             } catch (taskError) {
@@ -1111,7 +1113,22 @@ app.delete("/tasks/delete", async (c) => {
       console.log(`📊 Bot API deletion completed: ${botDeletedCount} tasks deleted`);
     }
 
-    // 2. Удаление файлов из директории data (если включено)
+    if (clearDatabase) {
+      console.log("🗑️  Starting database cleanup...");
+      
+      try {
+        const result = await taskService.deleteAllTasks();
+        dbDeletedCount = result.count;
+        console.log(`✅ Deleted ${dbDeletedCount} tasks from database`);
+      } catch (dbError) {
+        const errorMsg = `Failed to clear database: ${dbError}`;
+        errors.push(errorMsg);
+        console.error(`❌ ${errorMsg}`);
+      }
+    } else {
+      console.log("ℹ️  Database cleanup skipped (clearDatabase: false)");
+    }
+
     if (deleteFiles) {
       console.log("🗑️  Starting file deletion from data directory...");
       
@@ -1153,10 +1170,11 @@ app.delete("/tasks/delete", async (c) => {
       console.log("ℹ️  File deletion skipped (deleteFiles: false)");
     }
 
-    const totalDeleted = botDeletedCount + deletedCount;
+    const totalDeleted = botDeletedCount + deletedCount + dbDeletedCount;
 
     console.log("📊 Final statistics:", {
       botDeleted: botDeletedCount,
+      dbDeleted: dbDeletedCount,
       fileDeleted: deletedCount,
       totalDeleted: totalDeleted,
       errorsCount: errors.length
@@ -1167,6 +1185,7 @@ app.delete("/tasks/delete", async (c) => {
         success: false,
         message: `Partially deleted with ${errors.length} errors`,
         botDeleted: botDeletedCount,
+        dbDeleted: dbDeletedCount,
         fileDeleted: deletedCount,
         totalDeleted: totalDeleted,
         botResults: botResults,
@@ -1178,6 +1197,7 @@ app.delete("/tasks/delete", async (c) => {
       success: true,
       message: `Successfully deleted ${totalDeleted} items`,
       botDeleted: botDeletedCount,
+      dbDeleted: dbDeletedCount,
       fileDeleted: deletedCount,
       totalDeleted: totalDeleted,
       botResults: botResults
@@ -1366,11 +1386,25 @@ app.post("/tasks/send", async (c) => {
     const results: any[] = [];
     
     const sentJobsDB = await loadSentJobsDB();
+    const seenHashes = new Set<string>();
     const api = new DeadlineTaskApi(BOT_API_URL, BOT_TOKEN);
 
     for (let i = 0; i < jobsToProcess.length; i++) {
       const rawJob = jobsToProcess[i];
       const jobId = rawJob.id || rawJob.originalId || `job_${Date.now()}_${i}`;
+      const hash = (
+        (rawJob.title || "") +
+        "|" +
+        (rawJob.description || "")
+      ).toLowerCase().trim();
+      
+      // Пропускаем дубликаты по содержимому в текущей партии
+      if (seenHashes.has(hash)) {
+        skippedCount++;
+        console.warn(`⚠️  Duplicate in batch, skipping job ${jobId}`);
+        continue;
+      }
+      seenHashes.add(hash);
       
       // Проверяем, не отправляли ли уже эту задачу
       if (sentJobsDB[jobId]) {

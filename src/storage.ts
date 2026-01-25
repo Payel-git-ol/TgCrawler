@@ -106,7 +106,7 @@ export class DataStorage {
   private listJsonFiles(): string[] {
     return fs
       .readdirSync(this.storagePath)
-      .filter((f) => f.endsWith(".json"))
+      .filter((f) => f.endsWith(".json") && f !== "tasks.json")
       .sort();
   }
 

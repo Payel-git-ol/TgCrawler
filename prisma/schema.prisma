@@ -1,0 +1,22 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Task {
+  id          Int    @id @default(autoincrement())
+  id_post     String @unique
+  title       String
+  description String
+  workType    String
+  payment     String
+  deadline    String
+  url         String
+  channelUrl  String
+  scrapedAt   String
+  timestamp   String
+}
