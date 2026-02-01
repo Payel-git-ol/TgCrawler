@@ -1,17 +1,3 @@
-// Обновленный конфиг
-export const CONFIG = {
-  TELEGRAM_URLS: [
-    "https://t.me/s/digitaltender",
-    "https://t.me/s/freelance_dev_work",
-  ],
-  DATA_DIR: "./data",
-  MAX_CRAWL_ITERATIONS: 5, 
-  SCROLL_DELAY_MS: 800,
-  PAGE_LOAD_DELAY_MS: 3000, 
-  WAIT_FOR_SELECTOR_TIMEOUT_MS: 8000,
-  MAX_TITLE_LENGTH: 150,
-  MAX_DESCRIPTION_LENGTH: 1000,
-  MAX_FIELD_LENGTH: 200,
-  PORT: 3000,
-  MAX_POST_AGE_DAYS: 7,
-} as const;
+import config from '../../config.json';
+
+export const CONFIG = config as const;

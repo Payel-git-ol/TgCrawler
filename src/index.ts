@@ -8,7 +8,7 @@ import { Logger } from "./log/logger";
 import { ServiceFactory } from "./services/factory";
 import { TaskManager, TaskRequest } from "./services/tasks/taskManager";
 import { TelegramTaskPublisher } from "./services/tasks/telegramTaskPublisher";
-import { launchBrowser } from "./lounchBrowser";
+import { launchBrowser } from "./launchBrowser";
 import { DeadlineTaskApi } from "./services/deadlineTaskApi";
 import { TaskService } from "./services/database/task";
 import { config } from 'dotenv';
