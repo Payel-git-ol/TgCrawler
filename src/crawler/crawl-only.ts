@@ -3,9 +3,10 @@ import { DataStorage, JobPost } from "../storage";
 import { CONFIG } from "../config/config";
 import { Logger } from "../log/logger";
 import { ServiceFactory } from "../services/factory";
+import { launchBrowser } from "../lounchBrowser";
 
 async function crawl(): Promise<void> {
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const storage = new DataStorage(CONFIG.DATA_DIR);
   const oneWeekAgo = new Date();

@@ -20,8 +20,6 @@ export class TaskService {
   private prisma: PrismaClient;
 
   constructor() {
-    // PrismaClient с кастомным путем и провайдером "prisma-client" требует adapter
-    // Используем PrismaPg adapter для PostgreSQL
     const connectionString = process.env.DATABASE_URL;
     
     if (!connectionString) {

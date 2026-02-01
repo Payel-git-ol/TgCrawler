@@ -10,6 +10,8 @@ services:
         condition: service_healthy
     ports:
       - "3000:3000"
+    networks:
+      - tgcrawler-network
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -48,6 +50,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - tgcrawler-network
 
 
   nocodb:
@@ -57,10 +61,37 @@ services:
     env_file:
       - .env
     volumes:
+    networks:
+      - tgcrawler-network
       - nocodb_data:/usr/app/data
     restart: unless-stopped
+
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tgcrawler-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - ACME_AGREE=true
+    depends_on:
+      - telegram-scraper
+    networks:
+      - tgcrawler-network
 
 
 volumes:
   postgres_data_tgcrawler:
   nocodb_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  tgcrawler-network:
+    driver: bridge

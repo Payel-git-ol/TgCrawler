@@ -26,6 +26,8 @@ RUN npx playwright install chromium
 
 COPY . .
 
+RUN npm run prisma:generate
+
 RUN npm run build
 
 RUN mkdir -p /app/data /app/logs

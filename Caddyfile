@@ -1,0 +1,26 @@
+# Caddyfile - Caddy web server configuration
+# Edit the domain and point it to this server
+
+# Default local development setup
+:80 {
+    # Proxy to the telegram scraper application
+    reverse_proxy telegram-scraper:3000 {
+        header_uri -x-forwarded-path /
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Port {port}
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+# Uncomment and edit for production with your domain:
+# example.com {
+#     encode gzip
+#     reverse_proxy telegram-scraper:3000 {
+#         header_uri -x-forwarded-path /
+#         header_up X-Forwarded-Proto {scheme}
+#         header_up X-Forwarded-Host {host}
+#         header_up X-Forwarded-Port {port}
+#         header_up X-Real-IP {remote_host}
+#     }
+# }
