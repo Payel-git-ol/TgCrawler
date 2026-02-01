@@ -600,6 +600,8 @@ async function runCrawlAndSave(sinceDate?: Date): Promise<{ success: boolean; me
   const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const allCollected: JobPost[] = [];
+  let totalDbSaved = 0;
+  let totalFileSaved = 0;
 
   try {
     Logger.info(`ℹ️  Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
@@ -649,26 +651,26 @@ async function runCrawlAndSave(sinceDate?: Date): Promise<{ success: boolean; me
         }));
 
         Logger.info(`📝 Attempting to save ${tasksToSave.length} tasks to database...`);
-        
-        let savedCount = 0;
-        let skippedCount = 0;
-        
+
+        let dbSavedCount = 0;
+
         try {
           const result = await taskService.createManyTasks(tasksToSave);
-          savedCount = result.count;
-          skippedCount = newPosts.length - savedCount;
+          dbSavedCount = result.count;
+          totalDbSaved += dbSavedCount;
 
-          Logger.success(`✅ Saved to DB: ${savedCount}, Duplicates: ${skippedCount}`);
-          
-          if (savedCount === 0 && newPosts.length > 0) {
-            Logger.warn(`⚠️  Warning: ${newPosts.length} posts were not saved. All might be duplicates.`);
-          }
+          Logger.success(`✅ Saved to DB: ${dbSavedCount}, Duplicates: ${newPosts.length - dbSavedCount}`);
         } catch (dbError) {
           Logger.error(`❌ Database error while saving tasks:`, dbError);
-          Logger.error("Failed to save tasks to database", dbError);
-          // Если ошибка, считаем что ничего не сохранилось
-          savedCount = 0;
-          skippedCount = newPosts.length;
+        }
+
+        // Also save to files as backup
+        try {
+          const fileResult = await storage.saveNewJobs(newPosts);
+          totalFileSaved += fileResult.saved.length;
+          Logger.success(`✅ Saved to files: ${fileResult.saved.length}`);
+        } catch (fileError) {
+          Logger.error(`❌ File save error:`, fileError);
         }
 
         // Обновляем существующие для следующего канала
@@ -677,7 +679,8 @@ async function runCrawlAndSave(sinceDate?: Date): Promise<{ success: boolean; me
           existingContent.add(`${p.title}|${p.description}`.toLowerCase().trim());
         });
 
-        allCollected.push(...newPosts.slice(0, savedCount));
+        // Include all crawled posts in response regardless of DB save result
+        allCollected.push(...newPosts);
       } finally {
         await page.close();
       }
@@ -687,7 +690,7 @@ async function runCrawlAndSave(sinceDate?: Date): Promise<{ success: boolean; me
       return { success: true, message: "No new posts found", posts: [] };
     }
 
-    return { success: true, message: `Collected ${allCollected.length} new posts from ${CONFIG.TELEGRAM_URLS.length} channels`, posts: allCollected };
+    return { success: true, message: `Collected ${allCollected.length} new posts (DB: ${totalDbSaved}, files: ${totalFileSaved})`, posts: allCollected };
   } catch (error) {
     Logger.error(`❌ Crawl failed:`, error);
     return { success: false, error };
