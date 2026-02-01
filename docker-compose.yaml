@@ -13,8 +13,9 @@ services:
     networks:
       - tgcrawler-network
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - ${DATA_DIR}/data:/app/data
+      - ${DATA_DIR}/logs:/app/logs
+      - ${DATA_DIR}/config.json:/app/config.json:ro
     environment:
       - NODE_ENV=production
       - PORT=3000
