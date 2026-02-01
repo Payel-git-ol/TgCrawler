@@ -595,33 +595,30 @@ app.get("/api/jobs/filter/type/:type", async (c) => {
   }
 });
 
-app.post("/api/crawl", async (c) => {
+// Extracted crawl runner so it can be used by API and on-start hooks
+async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; posts?: JobPost[]; error?: any }> {
   const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const allCollected: JobPost[] = [];
-  let totalDuplicates = 0;
 
   try {
-    console.log(`ℹ️  Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
+    Logger.info(`ℹ️  Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
 
     // Проверяем подключение к БД
     try {
       const dbCount = await taskService.countTasks();
-      console.log(`ℹ️  Database connection OK. Current tasks in DB: ${dbCount}`);
+      Logger.info(`ℹ️  Database connection OK. Current tasks in DB: ${dbCount}`);
     } catch (dbError) {
-      console.error(`❌ Database connection error:`, dbError);
-      return c.json(
-        { success: false, error: `Database connection failed: ${String(dbError)}` },
-        500
-      );
+      Logger.error(`❌ Database connection error:`, dbError);
+      return { success: false, error: `Database connection failed: ${String(dbError)}` };
     }
 
     const existingIds = await taskService.getExistingPostIds();
     const existingContent = await taskService.getExistingContentHashes();
-    console.log(`ℹ️  Database: ${existingIds.size} existing post IDs, ${existingContent.size} content hashes`);
+    Logger.info(`ℹ️  Database: ${existingIds.size} existing post IDs, ${existingContent.size} content hashes`);
 
     for (const url of CONFIG.TELEGRAM_URLS) {
-      console.log(`ℹ️  Crawling: ${url}`);
+      Logger.info(`ℹ️  Crawling: ${url}`);
       const page = await browser.newPage();
 
       try {
@@ -633,7 +630,7 @@ app.post("/api/crawl", async (c) => {
         });
 
         if (newPosts.length === 0) {
-          console.warn(`⚠️   No new posts from ${url}`);
+          Logger.warn(`⚠️   No new posts from ${url}`);
           continue;
         }
 
@@ -651,7 +648,7 @@ app.post("/api/crawl", async (c) => {
           timestamp: post.timestamp || post.scrapedAt,
         }));
 
-        console.log(`📝 Attempting to save ${tasksToSave.length} tasks to database...`);
+        Logger.info(`📝 Attempting to save ${tasksToSave.length} tasks to database...`);
         
         let savedCount = 0;
         let skippedCount = 0;
@@ -661,13 +658,13 @@ app.post("/api/crawl", async (c) => {
           savedCount = result.count;
           skippedCount = newPosts.length - savedCount;
 
-          console.log(`✅ Saved to DB: ${savedCount}, Duplicates: ${skippedCount}`);
+          Logger.success(`✅ Saved to DB: ${savedCount}, Duplicates: ${skippedCount}`);
           
           if (savedCount === 0 && newPosts.length > 0) {
-            console.warn(`⚠️  Warning: ${newPosts.length} posts were not saved. All might be duplicates.`);
+            Logger.warn(`⚠️  Warning: ${newPosts.length} posts were not saved. All might be duplicates.`);
           }
         } catch (dbError) {
-          console.error(`❌ Database error while saving tasks:`, dbError);
+          Logger.error(`❌ Database error while saving tasks:`, dbError);
           Logger.error("Failed to save tasks to database", dbError);
           // Если ошибка, считаем что ничего не сохранилось
           savedCount = 0;
@@ -681,33 +678,30 @@ app.post("/api/crawl", async (c) => {
         });
 
         allCollected.push(...newPosts.slice(0, savedCount));
-        totalDuplicates += skippedCount;
       } finally {
         await page.close();
       }
     }
 
     if (allCollected.length === 0) {
-      return c.json({
-        success: true,
-        message: "No new posts found",
-        posts: [],
-      });
+      return { success: true, message: "No new posts found", posts: [] };
     }
 
-    return c.json({
-      success: true,
-      message: `Collected ${allCollected.length} new posts from ${CONFIG.TELEGRAM_URLS.length} channels`,
-      posts: allCollected,
-    });
+    return { success: true, message: `Collected ${allCollected.length} new posts from ${CONFIG.TELEGRAM_URLS.length} channels`, posts: allCollected };
   } catch (error) {
-    console.error(`❌ Crawl failed:`, error);
-    return c.json(
-      { success: false, error: `Crawl failed: ${String(error)}` },
-      500
-    );
+    Logger.error(`❌ Crawl failed:`, error);
+    return { success: false, error };
   } finally {
     await browser.close();
+  }
+}
+
+app.post("/api/crawl", async (c) => {
+  const result = await runCrawlAndSave();
+  if (result.success) {
+    return c.json({ success: true, message: result.message, posts: result.posts });
+  } else {
+    return c.json({ success: false, error: result.error || result.message }, 500);
   }
 });
 
@@ -2063,4 +2057,32 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   Logger.success(`Server running on http://localhost:${PORT}`);
+
+  // Optionally run an initial crawl on startup if requested via env
+  if (process.env.START_ON_BOOT && (process.env.START_ON_BOOT === 'true' || process.env.START_ON_BOOT === '1')) {
+    const attempts = Number(process.env.START_ON_BOOT_ATTEMPTS || 5);
+    const delayMs = Number(process.env.START_ON_BOOT_DELAY_MS || 10000);
+
+    (async () => {
+      for (let i = 1; i <= attempts; i++) {
+        try {
+          Logger.info(`Attempt ${i}/${attempts} to run initial crawl...`);
+          const res = await runCrawlAndSave();
+          if (res.success) {
+            Logger.success(`Initial crawl finished: ${res.message}`);
+            break;
+          } else {
+            Logger.warn(`Initial crawl attempt ${i} failed: ${res.error || res.message}`);
+          }
+        } catch (e) {
+          Logger.error(`Initial crawl attempt ${i} error:`, e);
+        }
+        if (i < attempts) {
+          await new Promise((r) => setTimeout(r, delayMs));
+        } else {
+          Logger.error(`Initial crawl failed after ${attempts} attempts`);
+        }
+      }
+    })();
+  }
 });
