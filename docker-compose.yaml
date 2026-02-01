@@ -15,14 +15,13 @@ services:
     volumes:
       - ${DATA_DIR}/data:/app/data
       - ${DATA_DIR}/logs:/app/logs
-      - ${DATA_DIR}/config.json:/app/config.json:ro
     environment:
       - NODE_ENV=production
       - PORT=3000
       - HOST=0.0.0.0
       - TZ=Europe/Moscow
       - PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium-browser
-      - DATABASE_URL=postgresql://tgcrawler:tgcrawler@postgres:5432/tgcrawler
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/telegram-scrapper
       - START_ON_BOOT=true
       - START_ON_BOOT_DELAY_MS=10000
       - START_ON_BOOT_ATTEMPTS=5
@@ -40,17 +39,15 @@ services:
     image: postgres:18
     container_name: tgcrawler-postgres
     restart: always
-    environment:
-      POSTGRES_USER: tgcrawler
-      POSTGRES_PASSWORD: tgcrawler
-      POSTGRES_DB: tgcrawler
+    env_file:
+      - .env
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data_tgcrawler:/var/lib/postgresql
+      - ${DATA_DIR}/pg:/var/lib/postgresql
       - ./init-db:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tgcrawler -d tgcrawler"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -62,10 +59,13 @@ services:
     image: nocodb/nocodb:latest
     ports:
       - "8080:8080"
-    env_file:
-      - .env
+    environment:
+      - NC_DB=pg://postgres:5432?u=${POSTGRES_USER}&p=${POSTGRES_PASSWORD}&d=${POSTGRES_DB}”
     volumes:
-      - nocodb_data:/usr/app/data
+      - ${DATA_DIR}/nocodb:/usr/app/data
+    restart: unless-stopped
+    depends_on: 
+       - postgres
     networks:
       - tgcrawler-network
     restart: unless-stopped
@@ -80,8 +80,8 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
+      - ${DATA_DIR}/caddy/data:/data
+      - ${DATA_DIR}/caddy/config:/config
     environment:
       - ACME_AGREE=true
     depends_on:
@@ -90,11 +90,6 @@ services:
       - tgcrawler-network
 
 
-volumes:
-  postgres_data_tgcrawler:
-  nocodb_data:
-  caddy_data:
-  caddy_config:
 
 networks:
   tgcrawler-network:
