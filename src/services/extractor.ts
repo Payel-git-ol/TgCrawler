@@ -37,6 +37,8 @@ export class PostExtractor {
         return null;
       }
 
+      const postTimestamp = this.htmlParser.extractTimestamp($el);
+
       return {
         id: postId,
         title,
@@ -44,10 +46,10 @@ export class PostExtractor {
         workType: this.parser.extractField(text, "тип работы|type"),
         payment: this.parser.extractField(text, "оплата|payment"),
         deadline: this.parser.extractField(text, "сроки|deadline|срок"),
-        url: `${baseUrl}?q=${postId}`,
+        url: `${baseUrl.replace('/s/', '/')}/${postId}`,
         channelUrl: baseUrl,
         scrapedAt: new Date().toISOString(),
-        timestamp: new Date().toISOString(),
+        timestamp: postTimestamp ? postTimestamp.toISOString() : new Date().toISOString(),
       };
     } catch {
       return null;
