@@ -61,9 +61,9 @@ services:
     env_file:
       - .env
     volumes:
+      - nocodb_data:/usr/app/data
     networks:
       - tgcrawler-network
-      - nocodb_data:/usr/app/data
     restart: unless-stopped
 
 
