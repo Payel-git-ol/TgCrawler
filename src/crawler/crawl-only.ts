@@ -6,15 +6,26 @@ import { ServiceFactory } from "../services/factory";
 import { launchBrowser } from "../launchBrowser";
 
 async function crawl(): Promise<void> {
+  // Parse --date argument (e.g. --date 2025-01-15)
+  const dateArgIndex = process.argv.indexOf('--date');
+  let sinceDate: Date | undefined;
+  if (dateArgIndex !== -1 && process.argv[dateArgIndex + 1]) {
+    const parsed = new Date(process.argv[dateArgIndex + 1]);
+    if (isNaN(parsed.getTime())) {
+      Logger.error(`Invalid date: ${process.argv[dateArgIndex + 1]}. Use ISO format (e.g. 2025-01-15)`);
+      process.exit(1);
+    }
+    sinceDate = parsed;
+  }
+
   const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const storage = new DataStorage(CONFIG.DATA_DIR);
-  const oneWeekAgo = new Date();
-  oneWeekAgo.setDate(oneWeekAgo.getDate() - CONFIG.MAX_POST_AGE_DAYS);
+  const cutoffDate = sinceDate || new Date(Date.now() - CONFIG.MAX_POST_AGE_DAYS * 24 * 60 * 60 * 1000);
 
   try {
-    Logger.info("Starting Telegram Crawl (Last Week Only)");
-    Logger.info(`Looking for posts newer than: ${oneWeekAgo.toLocaleDateString()}`);
+    Logger.info(`Starting Telegram Crawl (since ${cutoffDate.toISOString().split('T')[0]})`);
+    Logger.info(`Looking for posts newer than: ${cutoffDate.toLocaleDateString()}`);
 
     const existingIds = await storage.getExistingIds();
     const existingContent = await storage.getExistingContent();
@@ -32,7 +43,7 @@ async function crawl(): Promise<void> {
       const page = await browser.newPage();
 
       try {
-        const allPosts = await scraper.scrape(page, url);
+        const allPosts = await scraper.scrape(page, url, sinceDate);
         
         if (allPosts.length === 0) {
           Logger.warn(`  No posts found from ${url}`);
@@ -44,7 +55,7 @@ async function crawl(): Promise<void> {
           // Проверяем время публикации
           if (p.timestamp) {
             const postDate = new Date(p.timestamp);
-            if (postDate < oneWeekAgo) {
+            if (postDate < cutoffDate) {
               totalFilteredByAge++;
               return false;
             }

@@ -7,7 +7,7 @@ import { Logger } from "../../log/logger";
 export class Scraper {
   constructor(private extractor: PostExtractor, private htmlParser: HtmlParser) {}
 
-  async scrape(page: Page, url: string): Promise<any[]> {
+  async scrape(page: Page, url: string, sinceDate?: Date): Promise<any[]> {
     Logger.info(`Starting page load: ${url}`);
 
     await page.goto(url, { waitUntil: "networkidle" });
@@ -22,8 +22,7 @@ export class Scraper {
     const allPosts = [];
     let lastPostId: string | null = null;
     let foundOldPosts = false;
-    const oneWeekAgo = new Date();
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    const cutoffDate = sinceDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     for (let i = 0; i < CONFIG.MAX_CRAWL_ITERATIONS && !foundOldPosts; i++) {
       const posts = await this.extractor.extractFromPage(page, url);
@@ -41,11 +40,11 @@ export class Scraper {
         if (!post.timestamp) return true; 
         
         const postDate = new Date(post.timestamp);
-        return postDate >= oneWeekAgo;
+        return postDate >= cutoffDate;
       });
 
       if (recentPosts.length === 0) {
-        Logger.info("Reached posts older than 1 week, stopping");
+        Logger.info("Reached posts older than cutoff date, stopping");
         foundOldPosts = true;
         break;
       }
@@ -53,7 +52,7 @@ export class Scraper {
       allPosts.push(...recentPosts);
 
       if (recentPosts.length < posts.length) {
-        Logger.info("Reached posts older than 1 week, stopping");
+        Logger.info("Reached posts older than cutoff date, stopping");
         foundOldPosts = true;
         break;
       }
@@ -69,7 +68,7 @@ export class Scraper {
       await this.htmlParser.scrollPage(page, 2);
     }
 
-    Logger.success(`Collected ${allPosts.length} posts from the last week`);
+    Logger.success(`Collected ${allPosts.length} posts since ${cutoffDate.toISOString().split('T')[0]}`);
     return allPosts;
   }
 }

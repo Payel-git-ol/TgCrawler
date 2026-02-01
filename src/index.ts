@@ -479,7 +479,7 @@ app.get("/", (c) => {
         "GET /api/file/:filename": "Get posts from specific file",
         "GET /api/jobs/:id": "Get post by ID",
         "GET /api/jobs/filter/type/:type": "Filter by work type",
-        "POST /api/crawl": "Start crawler",
+        "POST /api/crawl": "Start crawler (optional body: {date: 'YYYY-MM-DD'} to crawl since a specific date)",
         "GET /api/stats": "Get statistics",
       },
       "Task Management": {
@@ -596,7 +596,7 @@ app.get("/api/jobs/filter/type/:type", async (c) => {
 });
 
 // Extracted crawl runner so it can be used by API and on-start hooks
-async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; posts?: JobPost[]; error?: any }> {
+async function runCrawlAndSave(sinceDate?: Date): Promise<{ success: boolean; message?: string; posts?: JobPost[]; error?: any }> {
   const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const allCollected: JobPost[] = [];
@@ -622,7 +622,7 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
       const page = await browser.newPage();
 
       try {
-        const allPosts = await scraper.scrape(page, url);
+        const allPosts = await scraper.scrape(page, url, sinceDate);
 
         const newPosts = allPosts.filter((p) => {
           const contentHash = `${p.title}|${p.description}`.toLowerCase().trim();
@@ -697,7 +697,21 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
 }
 
 app.post("/api/crawl", async (c) => {
-  const result = await runCrawlAndSave();
+  let sinceDate: Date | undefined;
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    if (body.date) {
+      const parsed = new Date(body.date);
+      if (isNaN(parsed.getTime())) {
+        return c.json({ success: false, error: "Invalid date format. Use ISO 8601 (e.g. 2025-01-15) or any Date-parseable string." }, 400);
+      }
+      sinceDate = parsed;
+    }
+  } catch {
+    // No body or invalid JSON — proceed with defaults
+  }
+
+  const result = await runCrawlAndSave(sinceDate);
   if (result.success) {
     return c.json({ success: true, message: result.message, posts: result.posts });
   } else {
