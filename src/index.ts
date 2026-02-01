@@ -467,6 +467,10 @@ const storage = new DataStorage(CONFIG.DATA_DIR);
 const taskManager = new TaskManager(CONFIG.DATA_DIR);
 const taskService = new TaskService();
 
+// Ensure database tables exist (fallback for when Prisma migrations don't run)
+taskService.ensureTablesExist().catch((err) => {
+  Logger.error("Failed to ensure database tables exist:", err);
+});
 
 app.get("/", (c) => {
   return c.json({

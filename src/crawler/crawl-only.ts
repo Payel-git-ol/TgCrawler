@@ -30,6 +30,7 @@ async function crawl(): Promise<void> {
   let taskService: TaskService | null = null;
   try {
     taskService = new TaskService();
+    await taskService.ensureTablesExist();
     const dbCount = await taskService.countTasks();
     Logger.info(`Database connection OK. Current tasks in DB: ${dbCount}`);
   } catch (dbError) {

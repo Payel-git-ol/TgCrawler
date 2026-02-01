@@ -40,5 +40,7 @@ ENV TZ=UTC
 
 EXPOSE 3000
 
-# Автоматически применить миграции Prisma перед запуском приложения
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# Apply Prisma migrations before starting the app.
+# If migrations fail (e.g. Prisma 7 config loading issues), the app will
+# still start and create tables via its own SQL fallback.
+CMD ["sh", "-c", "npx prisma migrate deploy || echo 'WARNING: prisma migrate deploy failed, app will create tables via SQL fallback'; node dist/index.js"]
