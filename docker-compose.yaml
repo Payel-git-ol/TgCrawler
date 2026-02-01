@@ -21,7 +21,7 @@ services:
       - HOST=0.0.0.0
       - TZ=Europe/Moscow
       - PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium-browser
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/telegram-scrapper
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - START_ON_BOOT=true
       - START_ON_BOOT_DELAY_MS=10000
       - START_ON_BOOT_ATTEMPTS=5
@@ -45,7 +45,6 @@ services:
       - "5432:5432"
     volumes:
       - ${DATA_DIR}/pg:/var/lib/postgresql
-      - ./init-db:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
