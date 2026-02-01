@@ -8,3 +8,7 @@ dist/
 .idea/
 
 /src/generated/prisma
+
+# Local mounted data/config
+.meta/
+config.local.json
