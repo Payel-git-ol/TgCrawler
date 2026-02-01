@@ -467,6 +467,10 @@ const storage = new DataStorage(CONFIG.DATA_DIR);
 const taskManager = new TaskManager(CONFIG.DATA_DIR);
 const taskService = new TaskService();
 
+// Ensure database tables exist (fallback for when Prisma migrations don't run)
+taskService.ensureTablesExist().catch((err) => {
+  Logger.error("Failed to ensure database tables exist:", err);
+});
 
 app.get("/", (c) => {
   return c.json({
@@ -479,7 +483,7 @@ app.get("/", (c) => {
         "GET /api/file/:filename": "Get posts from specific file",
         "GET /api/jobs/:id": "Get post by ID",
         "GET /api/jobs/filter/type/:type": "Filter by work type",
-        "POST /api/crawl": "Start crawler",
+        "POST /api/crawl": "Start crawler (optional body: {date: 'YYYY-MM-DD'} to crawl since a specific date)",
         "GET /api/stats": "Get statistics",
       },
       "Task Management": {
@@ -596,10 +600,12 @@ app.get("/api/jobs/filter/type/:type", async (c) => {
 });
 
 // Extracted crawl runner so it can be used by API and on-start hooks
-async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; posts?: JobPost[]; error?: any }> {
+async function runCrawlAndSave(sinceDate?: Date): Promise<{ success: boolean; message?: string; posts?: JobPost[]; error?: any }> {
   const browser = await launchBrowser();
   const scraper = ServiceFactory.createScraper();
   const allCollected: JobPost[] = [];
+  let totalDbSaved = 0;
+  let totalFileSaved = 0;
 
   try {
     Logger.info(`ℹ️  Starting crawl of ${CONFIG.TELEGRAM_URLS.length} channels`);
@@ -622,7 +628,7 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
       const page = await browser.newPage();
 
       try {
-        const allPosts = await scraper.scrape(page, url);
+        const allPosts = await scraper.scrape(page, url, sinceDate);
 
         const newPosts = allPosts.filter((p) => {
           const contentHash = `${p.title}|${p.description}`.toLowerCase().trim();
@@ -649,26 +655,26 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
         }));
 
         Logger.info(`📝 Attempting to save ${tasksToSave.length} tasks to database...`);
-        
-        let savedCount = 0;
-        let skippedCount = 0;
-        
+
+        let dbSavedCount = 0;
+
         try {
           const result = await taskService.createManyTasks(tasksToSave);
-          savedCount = result.count;
-          skippedCount = newPosts.length - savedCount;
+          dbSavedCount = result.count;
+          totalDbSaved += dbSavedCount;
 
-          Logger.success(`✅ Saved to DB: ${savedCount}, Duplicates: ${skippedCount}`);
-          
-          if (savedCount === 0 && newPosts.length > 0) {
-            Logger.warn(`⚠️  Warning: ${newPosts.length} posts were not saved. All might be duplicates.`);
-          }
+          Logger.success(`✅ Saved to DB: ${dbSavedCount}, Duplicates: ${newPosts.length - dbSavedCount}`);
         } catch (dbError) {
           Logger.error(`❌ Database error while saving tasks:`, dbError);
-          Logger.error("Failed to save tasks to database", dbError);
-          // Если ошибка, считаем что ничего не сохранилось
-          savedCount = 0;
-          skippedCount = newPosts.length;
+        }
+
+        // Also save to files as backup
+        try {
+          const fileResult = await storage.saveNewJobs(newPosts);
+          totalFileSaved += fileResult.saved.length;
+          Logger.success(`✅ Saved to files: ${fileResult.saved.length}`);
+        } catch (fileError) {
+          Logger.error(`❌ File save error:`, fileError);
         }
 
         // Обновляем существующие для следующего канала
@@ -677,7 +683,8 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
           existingContent.add(`${p.title}|${p.description}`.toLowerCase().trim());
         });
 
-        allCollected.push(...newPosts.slice(0, savedCount));
+        // Include all crawled posts in response regardless of DB save result
+        allCollected.push(...newPosts);
       } finally {
         await page.close();
       }
@@ -687,7 +694,7 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
       return { success: true, message: "No new posts found", posts: [] };
     }
 
-    return { success: true, message: `Collected ${allCollected.length} new posts from ${CONFIG.TELEGRAM_URLS.length} channels`, posts: allCollected };
+    return { success: true, message: `Collected ${allCollected.length} new posts (DB: ${totalDbSaved}, files: ${totalFileSaved})`, posts: allCollected };
   } catch (error) {
     Logger.error(`❌ Crawl failed:`, error);
     return { success: false, error };
@@ -697,7 +704,21 @@ async function runCrawlAndSave(): Promise<{ success: boolean; message?: string; 
 }
 
 app.post("/api/crawl", async (c) => {
-  const result = await runCrawlAndSave();
+  let sinceDate: Date | undefined;
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    if (body.date) {
+      const parsed = new Date(body.date);
+      if (isNaN(parsed.getTime())) {
+        return c.json({ success: false, error: "Invalid date format. Use ISO 8601 (e.g. 2025-01-15) or any Date-parseable string." }, 400);
+      }
+      sinceDate = parsed;
+    }
+  } catch {
+    // No body or invalid JSON — proceed with defaults
+  }
+
+  const result = await runCrawlAndSave(sinceDate);
   if (result.success) {
     return c.json({ success: true, message: result.message, posts: result.posts });
   } else {

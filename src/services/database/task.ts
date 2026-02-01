@@ -18,21 +18,64 @@ export interface TaskData {
 
 export class TaskService {
   private prisma: PrismaClient;
+  private pool: Pool;
 
   constructor() {
     const connectionString = process.env.DATABASE_URL;
-    
+
     if (!connectionString) {
       throw new Error("DATABASE_URL environment variable is not set");
     }
 
-    const pool = new Pool({ connectionString });
-    const adapter = new PrismaPg(pool);
-    
+    this.pool = new Pool({ connectionString });
+    const adapter = new PrismaPg(this.pool);
+
     this.prisma = new PrismaClient({
       adapter,
       log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
     });
+  }
+
+  /**
+   * Ensures the Task table and its indexes exist in the database.
+   * This is a fallback for cases where Prisma migrations fail to run
+   * (e.g., Prisma 7 config loading issues in Docker containers).
+   */
+  async ensureTablesExist(): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      const tableCheck = await client.query(
+        `SELECT to_regclass('public."Task"') AS table_exists`
+      );
+      if (tableCheck.rows[0].table_exists) {
+        Logger.info("Database table 'Task' already exists");
+        return;
+      }
+
+      Logger.warn("Table 'Task' not found — creating via raw SQL fallback...");
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS "Task" (
+          "id" SERIAL NOT NULL,
+          "id_post" TEXT NOT NULL,
+          "title" TEXT NOT NULL,
+          "description" TEXT NOT NULL,
+          "workType" TEXT NOT NULL,
+          "payment" TEXT NOT NULL,
+          "deadline" TEXT NOT NULL,
+          "url" TEXT NOT NULL,
+          "channelUrl" TEXT NOT NULL,
+          "scrapedAt" TEXT NOT NULL,
+          "timestamp" TEXT NOT NULL,
+          CONSTRAINT "Task_pkey" PRIMARY KEY ("id")
+        );
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS "Task_id_post_key" ON "Task"("id_post");
+      `);
+      Logger.success("Table 'Task' created successfully via SQL fallback");
+    } finally {
+      client.release();
+    }
   }
 
   async createTask(data: TaskData) {

@@ -2,7 +2,7 @@ const AD_PATTERNS = [
   /^\[?реклама\]?/i,
   /^sponsored/i,
   /^рассыли/i,
-  /pinned/i,
+  /^pinned/i,
 ];
 
 const SPAM_KEYWORDS = ["спам", "реклама", "pinned", "закреплено"];
@@ -59,12 +59,12 @@ export class ContentValidator {
       return false;
     }
 
-    // Check for job emoji in both title and description start
-    const hasJobEmoji = this.hasJobEmoji(title) || 
+    const hasJobEmoji = this.hasJobEmoji(title) ||
                        (title + description).substring(0, 200).includes("📌") ||
                        (title + description).substring(0, 200).includes("👔") ||
                        (title + description).substring(0, 200).includes("💼");
 
-    return this.hasJobKeyword(combined) && hasJobEmoji;
+    // Accept post if it has job keywords OR job emojis (not requiring both)
+    return this.hasJobKeyword(combined) || hasJobEmoji;
   }
 }

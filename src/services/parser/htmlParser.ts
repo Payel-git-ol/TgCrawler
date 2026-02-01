@@ -6,14 +6,23 @@ export const SELECTORS = {
   POST_MESSAGE: ".tgme_widget_message",
   MESSAGE_TEXT: ".tgme_widget_message_text",
   POST_LINK: "a[href*='/s/']",
-  MESSAGE_TIME: "time.datetime",
+  MESSAGE_TIME: "time[datetime]",
   MESSAGE_DATE: ".tgme_widget_message_date",
 };
 
 export class HtmlParser {
   extractPostId($el: any): string {
-    const href = $el.find(SELECTORS.POST_LINK).first().attr("href") || "";
-    return href.split("/").pop() || `post_${Date.now()}`;
+    // Prefer data-post attribute (e.g. "digitaltender/5059")
+    const dataPost = $el.attr("data-post") || "";
+    if (dataPost) {
+      return dataPost.split("/").pop() || dataPost;
+    }
+    // Fallback: find the date link which contains the post URL
+    const dateHref = $el.find(SELECTORS.MESSAGE_DATE + " a").first().attr("href") || "";
+    if (dateHref) {
+      return dateHref.split("/").pop() || `post_${Date.now()}`;
+    }
+    return `post_${Date.now()}`;
   }
 
   extractText($el: any): string {
