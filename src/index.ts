@@ -799,6 +799,170 @@ app.put("/api/tasks/:id", async (c) => {
   }
 });
 
+// Helper function to transform task to API order format
+interface OrderPayload {
+  title: string;
+  description: string;
+  workType: string;
+  payment: string;
+  deadline: string;
+  priority: number;
+}
+
+function transformTaskToOrder(task: any): OrderPayload {
+  // Calculate priority based on deadline and payment
+  let priority = 50; // Default priority
+  
+  // Higher priority for tasks with payment
+  if (task.payment && task.payment !== '') {
+    const payment = parseFloat(task.payment);
+    if (!isNaN(payment)) {
+      priority += Math.min(payment / 1000, 30); // Add up to 30 points for payment
+    }
+  }
+  
+  // Adjust priority based on deadline urgency
+  if (task.deadline) {
+    const deadline = new Date(task.deadline);
+    const now = new Date();
+    const daysUntilDeadline = Math.ceil((deadline.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (daysUntilDeadline <= 1) {
+      priority += 20;
+    } else if (daysUntilDeadline <= 3) {
+      priority += 10;
+    } else if (daysUntilDeadline > 30) {
+      priority -= 10;
+    }
+  }
+  
+  // Clamp priority between 1 and 100
+  priority = Math.max(1, Math.min(100, priority));
+  
+  return {
+    title: task.title || 'Без названия',
+    description: task.description || 'Описание отсутствует',
+    workType: task.workType || 'other',
+    payment: task.payment || '',
+    deadline: task.deadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    priority: priority
+  };
+}
+
+// Endpoint to send all tasks to external API
+app.post("/api/tasks/send-all", async (c) => {
+  try {
+    const apiUrl = process.env.ORDERS_API_URL || 'http://localhost:8080/api/v1/orders';
+    
+    // Fetch all tasks from database
+    const tasks = await taskService.getAllTasks();
+    
+    if (tasks.length === 0) {
+      return c.json({ 
+        success: false, 
+        error: 'No tasks found to send' 
+      }, 400);
+    }
+    
+    console.log(`📤 Sending ${tasks.length} tasks to ${apiUrl}`);
+    
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: [] as string[]
+    };
+    
+    // Send each task to the API
+    for (const task of tasks) {
+      try {
+        const orderPayload = transformTaskToOrder(task);
+        
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(orderPayload)
+        });
+        
+        if (response.ok) {
+          results.success++;
+          console.log(`✅ Task ${task.id_post} sent successfully`);
+        } else {
+          results.failed++;
+          const errorText = await response.text();
+          results.errors.push(`Task ${task.id_post}: HTTP ${response.status} - ${errorText}`);
+          console.error(`❌ Failed to send task ${task.id_post}: HTTP ${response.status}`);
+        }
+      } catch (taskError) {
+        results.failed++;
+        results.errors.push(`Task ${task.id_post}: ${String(taskError)}`);
+        console.error(`❌ Error sending task ${task.id_post}:`, taskError);
+      }
+    }
+    
+    return c.json({
+      success: results.failed === 0,
+      message: `Sent ${results.success} tasks, ${results.failed} failed`,
+      results: results
+    });
+  } catch (error) {
+    Logger.error("Failed to send tasks to API", error);
+    return c.json({ 
+      success: false, 
+      error: 'Failed to send tasks to API' 
+    }, 500);
+  }
+});
+
+// Endpoint to send a single task to external API
+app.post("/api/tasks/:id/send", async (c) => {
+  try {
+    const apiUrl = process.env.ORDERS_API_URL || 'http://localhost:8080/api/v1/orders';
+    const postId = c.req.param("id");
+    
+    const task = await taskService.getTaskByPostId(postId);
+    
+    if (!task) {
+      return c.json({ success: false, error: "Task not found" }, 404);
+    }
+    
+    const orderPayload = transformTaskToOrder(task);
+    
+    console.log(`📤 Sending task ${postId} to ${apiUrl}`);
+    
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(orderPayload)
+    });
+    
+    if (response.ok) {
+      const responseData: any = await response.json();
+      return c.json({
+        success: true,
+        message: 'Task sent successfully',
+        orderId: responseData?.id || responseData?.orderId
+      });
+    } else {
+      const errorText = await response.text();
+      const status = response.status as 400 | 401 | 403 | 404 | 500 | 502 | 503;
+      return c.json({
+        success: false,
+        error: `API returned HTTP ${response.status}: ${errorText}`
+      }, status);
+    }
+  } catch (error) {
+    Logger.error("Failed to send task to API", error);
+    return c.json({ 
+      success: false, 
+      error: 'Failed to send task to API' 
+    }, 500);
+  }
+});
+
 app.delete("/api/tasks/:id", async (c) => {
   try {
     const taskId = c.req.param("id");
