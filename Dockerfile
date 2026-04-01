@@ -40,5 +40,10 @@ ENV TZ=UTC
 
 EXPOSE 3000
 
-# Автоматически применить миграции Prisma перед запуском приложения
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# Copy startup script that runs prisma generate + migrate deploy before starting the app.
+# NOTE: prisma migrate deploy MUST run at startup (not during build) because it needs
+# a running database. The database is only available at runtime via docker-compose.
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+CMD ["/app/docker-entrypoint.sh"]
